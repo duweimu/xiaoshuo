@@ -193,38 +193,6 @@ def test_snowflake_long_synopsis_can_be_skipped_with_reason_and_characters_are_s
     assert any((character.bible_json.get("psychological_profile") or {}).get("deepest_fear") for character in characters)
 
 
-def test_snowflake_long_synopsis_materializes_reverse_causal_skeleton(client) -> None:
-    project = _create_project(client, key="causal-skeleton")
-    for step_key in [
-        "book_brief",
-        "one_sentence_summary",
-        "one_paragraph_summary",
-        "character_sheets",
-        "short_synopsis",
-        "character_synopses",
-    ]:
-        _approve_step(client, project["project_id"], step_key)
-
-    long_synopsis = _generate_step(client, project["project_id"], "long_synopsis")
-    skeleton = long_synopsis["artifact_json"].get("causal_skeleton")
-
-    assert skeleton is not None
-    assert skeleton["chain"]
-    assert skeleton["schema_version"] == "reverse_causal_skeleton_v1"
-    assert skeleton["chain_order"] == "opening_to_ending"
-    assert skeleton["ending_state"]
-    assert skeleton["chain"][-1]["description"] == skeleton["ending_state"]
-    assert all(
-        "character_state_before" in link and "character_state_after" in link
-        for link in skeleton["chain"]
-    )
-    assert skeleton["integrity_evaluated"] is False
-    assert skeleton["integrity_valid"] is None
-    assert skeleton["integrity_issues"] == []
-    assert "integrity unknown" in skeleton["prompt_text"]
-    assert "Reverse Causal Skeleton" in skeleton["prompt_text"]
-
-
 def test_snowflake_materializes_outline_plan_and_scene_details_into_runtime_cards(client, session) -> None:
     project = _create_project(client, key="materialize")
     _approve_required_snowflake(client, project["project_id"])
@@ -280,12 +248,10 @@ def test_reapproving_snowflake_scene_details_marks_runtime_contracts_and_current
     assert approve_response.status_code == 200
 
     first_scene_id = plan["plan_json"]["chapters"][0]["scenes"][0]["scene_id"]
-    contract_response = client.post(
-        f"/api/v1/scenes/{first_scene_id}/execution-contract",
-        headers={"X-Idempotency-Key": "runtime-stale-contract"},
-    )
-    assert contract_response.status_code == 200
-    contract_id = contract_response.json()["data"]["contract"]["contract_id"]
+    from novel_system.services.scene_execution import SceneExecutionContractService
+
+    contract_id = SceneExecutionContractService(session).generate(first_scene_id).contract_id
+    session.commit()
 
     session.add(
         SceneDraft(
@@ -384,12 +350,10 @@ def test_reapproving_one_scene_detail_only_invalidates_that_scene_runtime(client
     contract_ids: dict[str, str] = {}
     for index, scene in enumerate(scenes, start=1):
         scene_id = scene["scene_id"]
-        contract_response = client.post(
-            f"/api/v1/scenes/{scene_id}/execution-contract",
-            headers={"X-Idempotency-Key": f"runtime-stale-scoped-contract-{index}"},
-        )
-        assert contract_response.status_code == 200
-        contract_ids[scene_id] = contract_response.json()["data"]["contract"]["contract_id"]
+        from novel_system.services.scene_execution import SceneExecutionContractService
+
+        contract_ids[scene_id] = SceneExecutionContractService(session).generate(scene_id).contract_id
+        session.commit()
         session.add(
             SceneDraft(
                 row_id=f"scene_draft_runtime_stale_scoped_{index}",

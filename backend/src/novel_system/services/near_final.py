@@ -15,15 +15,17 @@ from novel_system.db.models import (
     ChapterMemory,
     FinalScene,
     GenerationPlanningArtifact,
+    LlmCall,
     RevisionCandidate,
     SceneBlueprint,
     SceneCard,
     WriterEvaluation,
 )
+from novel_system.services.author_actions import author_action
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
-from novel_system.services.llm_accounting import LLMCallContext
-from novel_system.services.llm_fail_closed import raise_llm_domain_error
+from novel_system.services.llm_accounting import LLMAccountingRejected, LLMCallContext
+from novel_system.services.llm_fail_closed import is_llm_capability_error, raise_llm_domain_error
 from novel_system.services.llm_task_runner import (
     LLMNodeExecutionError,
     LLMNodeRunner,
@@ -510,8 +512,13 @@ class NearFinalAcceptanceService:
             payload = _normalize_acceptance_payload(node_result.response.structured_output)
             llm_call_id = node_result.llm_call_id
         except LLMNodeExecutionError as exc:
+            llm_call_id = self._ledgered_failure_llm_call_id(
+                exc,
+                node_id="near_final_acceptance_review",
+                operation="场景准定稿验收",
+                target_ref=f"scene_card:{scene.scene_id}",
+            )
             payload = _execution_failure_payload(exc.message)
-            llm_call_id = exc.llm_call_id
 
         payload = _apply_scene_near_final_gates(payload, source_content)
         source = {
@@ -602,8 +609,13 @@ class NearFinalAcceptanceService:
             payload = _normalize_acceptance_payload(node_result.response.structured_output)
             llm_call_id = node_result.llm_call_id
         except LLMNodeExecutionError as exc:
+            llm_call_id = self._ledgered_failure_llm_call_id(
+                exc,
+                node_id="chapter_near_final_review",
+                operation="章级准定稿评审",
+                target_ref=f"chapter:{chapter.chapter_id}",
+            )
             payload = _execution_failure_payload(exc.message)
-            llm_call_id = exc.llm_call_id
 
         evaluation = self._persist_evaluation(
             object_type="chapter",
@@ -629,6 +641,50 @@ class NearFinalAcceptanceService:
         self.session.flush()
         return {**payload, "evaluation_id": evaluation.evaluation_id, "should_rewrite": False}
 
+    def _ledgered_failure_llm_call_id(
+        self,
+        exc: LLMNodeExecutionError,
+        *,
+        node_id: str,
+        operation: str,
+        target_ref: str,
+    ) -> str:
+        """只有已落台账的失败才允许降级成"验收执行失败"评估行（正文照常交付）。
+
+        LLMNodeRunner.run 在台账落行之前就被拒（例如记账上下文 / 运行任务归属校验失败、
+        请求构造异常）时，异常携带的 llm_call_id 从未写入 llm_calls。若照旧把它持久化成
+        evaluator_llm_call_id，归档检查点随后会以 RUN_CHECKPOINT_OUTPUT_MISSING 假失败，
+        真实错误码被吞掉。这里 fail-closed：抛出真实错误码，且不留下悬空的评估行。
+        """
+
+        if self.session.get(LlmCall, exc.llm_call_id) is not None:
+            return exc.llm_call_id
+        control_plane_failure = is_llm_capability_error(exc) or isinstance(
+            exc.original_error, LLMAccountingRejected
+        )
+        raise DomainError(
+            exc.error_code,
+            exc.message,
+            status_code=409 if control_plane_failure else 502,
+            details={
+                "llm_call_id": exc.llm_call_id,
+                "node_id": node_id,
+                "error_code": exc.error_code,
+                "retryable": exc.retryable,
+                "next_action": "retry_after_restoring_llm_execution_context",
+                "response_summary": exc.response_summary,
+                "author_action": author_action(
+                    f"{operation}未能启动",
+                    f"{operation}请求在进入模型台账之前被拒绝（{exc.error_code}），已有正文没有被撤销。"
+                    "请重新运行；若持续失败，请检查系统配置里的模型路由与运行任务状态。",
+                    target_view="workbench",
+                    target_ref=target_ref,
+                    primary_button_label="去场景工作台",
+                    evidence_summary=[f"节点：{node_id}", f"错误：{exc.error_code}"],
+                ),
+            },
+        ) from exc
+
     @staticmethod
     def _should_rewrite(payload: dict[str, Any]) -> bool:
         if payload.get("pass_flag") or payload.get("requires_human_review"):
@@ -646,25 +702,12 @@ class NearFinalAcceptanceService:
         payload: dict[str, Any],
         llm_call_id: str | None,
     ) -> WriterEvaluation:
-        from novel_system.services.model_independence import (
-            judge_independence,
-            observed_correlated_judge,
-        )
-
-        independence_evidence = observed_correlated_judge(
-            self.session,
-            scene_id,
-            chapter_id=chapter_id if scene_id is None else None,
-        )
-        if independence_evidence is None:
-            independence_evidence = judge_independence(self.session)
         raw_contract_field_refs = payload.get("contract_field_refs")
         contract_field_refs = (
             dict(raw_contract_field_refs)
             if isinstance(raw_contract_field_refs, dict)
             else {}
         )
-        contract_field_refs["_model_independence"] = independence_evidence
         evaluation = WriterEvaluation(
             evaluation_id=f"near_final_eval_{object_type}_{object_id}_{uuid.uuid4().hex[:10]}",
             object_type=object_type,

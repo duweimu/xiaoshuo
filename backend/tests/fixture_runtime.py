@@ -4,23 +4,17 @@ import argparse
 import json
 from typing import Any
 
-from sqlalchemy import delete, func, or_, select
+from sqlalchemy import delete
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AttemptTracker,
-    BannedRuleCluster,
-    CalibrationLine,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
     ChapterState,
     FinalScene,
-    ForeshadowTracker,
     HumanReviewEvent,
-    IdempotencyKey,
-    OperationLog,
-    ReindexJob,
     RelationProfile,
     ReviewItem,
     SceneBundle,
@@ -28,18 +22,10 @@ from novel_system.db.models import (
     SceneDraft,
     SceneMemory,
     SceneRunState,
-    StagedBackfill,
     StoryProject,
-    StyleObservation,
-    StyleRule,
-    VectorAliasRegistry,
-    VerifyJob,
-    VersionRegistry,
     VoiceProfile,
-    WorldRule,
 )
 from novel_system.db.session import SessionLocal
-from novel_system.services.idempotency import canonical_request_hash
 
 DEMO_PROJECT = {
     "project_id": "PRJ_DEMO_CH001",
@@ -113,27 +99,6 @@ DEMO_SCENES = [
     },
 ]
 
-DEMO_STYLE_OBSERVATION_REVIEW = {
-    "review_id": "review_demo_style_observation",
-    "scene_id": "CH001_SC01",
-    "chapter_id": "CH001",
-    "item_type": "style_observation",
-    "status": "pending",
-    "candidate_text": "收尾保留半句停顿，让情绪压在门后。",
-    "candidate_payload_json": {
-        "scope": "global",
-        "scope_ref_id": "global",
-        "lineage_key": "STY_DEMO_001",
-        "text": "收尾保留半句停顿，让情绪压在门后。",
-    },
-    "active_on_approve": 0,
-    "materialize_status": "pending",
-    "retry_count": 0,
-    "max_retry": 3,
-    "approved_item_row_id": None,
-    "approved_item_id": None,
-}
-DEMO_ALIAS_SCOPE = "style_observation:global:global"
 DEMO_VOICE_PROFILES = [
     {
         "row_id": "voice_profile_VOICE_CHAR_A_v1",
@@ -176,79 +141,6 @@ DEMO_RELATION_PROFILES = [
         "source_note": "demo baseline",
     },
 ]
-DEMO_STYLE_RULES = [
-    {
-        "row_id": "style_rule_STYLE_DEMO_MAIN_v1",
-        "style_rule_set_id": "STYLE_DEMO_MAIN",
-        "version": 1,
-        "scope": "global",
-        "scope_ref_id": "global",
-        "content": "keep emotion in gesture and pause",
-        "source_review_id": None,
-        "active_flag": 1,
-        "runtime_eligible": 1,
-        "runtime_eligibility_basis": "direct_read",
-    }
-]
-DEMO_BANNED_RULE_CLUSTERS = [
-    {
-        "row_id": "banned_rule_cluster_BAN_DEMO_REUNION_v1",
-        "banned_cluster_id": "BAN_DEMO_REUNION",
-        "version": 1,
-        "scope": "global",
-        "scope_ref_id": "global",
-        "content": "do not explain the whole backstory at reunion time",
-        "source_review_id": None,
-        "active_flag": 1,
-        "runtime_eligible": 1,
-        "runtime_eligibility_basis": "direct_read",
-    }
-]
-DEMO_WORLD_RULES = [
-    {
-        "row_id": "world_rule_WR_DEMO_CITY_v1",
-        "world_rule_id": "WR_DEMO_CITY",
-        "version": 1,
-        "scope": "global",
-        "scope_ref_id": "global",
-        "rule_tier": "hard",
-        "content": "public spellcasting inside the city is forbidden",
-        "source_review_id": None,
-        "active_flag": 1,
-        "runtime_eligible": 1,
-        "runtime_eligibility_basis": "direct_read",
-        "expires_at": None,
-    }
-]
-DEMO_CALIBRATION_LINES = [
-    {
-        "row_id": "calibration_line_CAL_DEMO_001_v1",
-        "calibration_line_id": "CAL_DEMO_001",
-        "version": 1,
-        "scope": "global",
-        "scope_ref_id": "global",
-        "text": "the door closed like a sentence left unfinished",
-        "source_review_id": None,
-        "active_flag": 1,
-        "runtime_eligible": 1,
-        "runtime_eligibility_basis": "vector_ready",
-    }
-]
-DEMO_FORESHADOW_TRACKERS = [
-    {
-        "row_id": "foreshadow_FORESHADOW_DEMO_001_v1",
-        "foreshadow_id": "FORESHADOW_DEMO_001",
-        "version": 1,
-        "chapter_id": "CH001",
-        "scene_id": "CH001_SC01",
-        "text": "the old letter sender clue is now in play",
-        "tracker_status": "open",
-        "source_review_id": None,
-        "active_flag": 1,
-        "runtime_eligible": 1,
-        "runtime_eligibility_basis": "foreshadow_open",
-    }
-]
 DEMO_SCENE_SUMMARIES = [
     {
         "row_id": "scene_memory_CH001_SC01_summary_v1",
@@ -276,259 +168,7 @@ DEMO_CHAPTER_SUMMARIES = [
         "runtime_eligibility_basis": "direct_read",
     }
 ]
-DEMO_KNOWLEDGE_VERSION_REGISTRIES = [
-    {
-        "object_type": "style_rule",
-        "lineage_key": "STYLE_DEMO_MAIN",
-        "version": 1,
-        "physical_row_id": "style_rule_STYLE_DEMO_MAIN_v1",
-        "alias_scope": None,
-        "materialize_status": "succeeded",
-        "reindex_status": "not_required",
-        "verify_status": "not_required",
-        "activated_at": "2026-04-10T00:00:00+00:00",
-    },
-    {
-        "object_type": "banned_rule_cluster",
-        "lineage_key": "BAN_DEMO_REUNION",
-        "version": 1,
-        "physical_row_id": "banned_rule_cluster_BAN_DEMO_REUNION_v1",
-        "alias_scope": None,
-        "materialize_status": "succeeded",
-        "reindex_status": "not_required",
-        "verify_status": "not_required",
-        "activated_at": "2026-04-10T00:00:00+00:00",
-    },
-    {
-        "object_type": "world_rule",
-        "lineage_key": "WR_DEMO_CITY",
-        "version": 1,
-        "physical_row_id": "world_rule_WR_DEMO_CITY_v1",
-        "alias_scope": None,
-        "materialize_status": "succeeded",
-        "reindex_status": "not_required",
-        "verify_status": "not_required",
-        "activated_at": "2026-04-10T00:00:00+00:00",
-    },
-    {
-        "object_type": "calibration_line",
-        "lineage_key": "CAL_DEMO_001",
-        "version": 1,
-        "physical_row_id": "calibration_line_CAL_DEMO_001_v1",
-        "alias_scope": "calibration_line:global:global",
-        "materialize_status": "succeeded",
-        "reindex_status": "succeeded",
-        "verify_status": "succeeded",
-        "activated_at": "2026-04-10T00:00:00+00:00",
-    },
-    {
-        "object_type": "foreshadow",
-        "lineage_key": "FORESHADOW_DEMO_001",
-        "version": 1,
-        "physical_row_id": "foreshadow_FORESHADOW_DEMO_001_v1",
-        "alias_scope": None,
-        "materialize_status": "succeeded",
-        "reindex_status": "not_required",
-        "verify_status": "not_required",
-        "activated_at": "2026-04-10T00:00:00+00:00",
-    },
-    {
-        "object_type": "scene_summary",
-        "lineage_key": "CH001_SC01",
-        "version": 1,
-        "physical_row_id": "scene_memory_CH001_SC01_summary_v1",
-        "alias_scope": None,
-        "materialize_status": "succeeded",
-        "reindex_status": "not_required",
-        "verify_status": "not_required",
-        "activated_at": "2026-04-10T00:00:00+00:00",
-    },
-    {
-        "object_type": "chapter_summary",
-        "lineage_key": "CH001",
-        "version": 1,
-        "physical_row_id": "chapter_memory_CH001_summary_v1",
-        "alias_scope": None,
-        "materialize_status": "succeeded",
-        "reindex_status": "not_required",
-        "verify_status": "not_required",
-        "activated_at": "2026-04-10T00:00:00+00:00",
-    },
-]
-DEMO_CALIBRATION_ALIAS = {
-    "alias_scope": "calibration_line:global:global",
-    "object_type": "calibration_line",
-    "scope": "global",
-    "scope_ref_id": "global",
-    "collection_family": "calibration_line_global_global",
-    "active_alias": "calibration_line_global_global__candidate__calibration_line_CAL_DEMO_001_v1",
-    "candidate_alias": None,
-    "active_snapshot_version": "snapshot__calibration_line_CAL_DEMO_001_v1",
-    "candidate_snapshot_version": None,
-    "active_embedding_version": "embed__calibration_line_CAL_DEMO_001_v1",
-    "candidate_embedding_version": None,
-    "verify_status": "succeeded",
-    "sample_query_success": 1,
-}
 
-DEMO_RUNTIME_OPS_E2E_FIXTURE = "runtime_ops_e2e"
-DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_REVIEW = {
-    "review_id": "review_demo_due_promotion",
-    "scene_id": "CH001_SC02",
-    "chapter_id": "CH001",
-    "item_type": "style_observation",
-    "status": "approved",
-    "candidate_text": "promote the verified scene-scope note during runtime ops",
-    "candidate_payload_json": {
-        "scope": "scene",
-        "scope_ref_id": "CH001_SC02",
-        "lineage_key": "STY_DEMO_DUE_PROMOTION",
-        "text": "promote the verified scene-scope note during runtime ops",
-        "effective_at": "2000-01-01T00:00:00+00:00",
-    },
-    "active_on_approve": 1,
-    "materialize_status": "succeeded",
-    "retry_count": 0,
-    "max_retry": 3,
-    "approved_item_row_id": "style_observation_STY_DEMO_DUE_PROMOTION_v1",
-    "approved_item_id": "STY_DEMO_DUE_PROMOTION",
-}
-DEMO_RUNTIME_OPS_E2E_RECOVERY_REVIEW = {
-    "review_id": "review_demo_recovery_followup",
-    "scene_id": "CH001_SC03",
-    "chapter_id": "CH001",
-    "item_type": "style_observation",
-    "status": "pending",
-    "candidate_text": "replay the stranded approve request and finish the follow-up chain",
-    "candidate_payload_json": {
-        "scope": "scene",
-        "scope_ref_id": "CH001_SC03",
-        "lineage_key": "STY_DEMO_RECOVERY_FOLLOWUP",
-        "text": "replay the stranded approve request and finish the follow-up chain",
-    },
-    "active_on_approve": 0,
-    "materialize_status": "pending",
-    "retry_count": 0,
-    "max_retry": 3,
-    "approved_item_row_id": None,
-    "approved_item_id": None,
-}
-DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ACTIVE_ROW = {
-    "row_id": "style_observation_STY_ACTIVE_SC02_v1",
-    "style_observation_id": "STY_ACTIVE_SC02",
-    "version": 1,
-    "scope": "scene",
-    "scope_ref_id": "CH001_SC02",
-    "text": "the current scene note stays active until due promotion runs",
-    "source_review_id": "review_demo_active_scene_seed",
-    "active_flag": 1,
-    "runtime_eligible": 1,
-    "runtime_eligibility_basis": "vector_ready",
-}
-DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ROW = {
-    "row_id": "style_observation_STY_DEMO_DUE_PROMOTION_v1",
-    "style_observation_id": "STY_DEMO_DUE_PROMOTION",
-    "version": 1,
-    "scope": "scene",
-    "scope_ref_id": "CH001_SC02",
-    "text": "promote the verified scene-scope note during runtime ops",
-    "source_review_id": "review_demo_due_promotion",
-    "active_flag": 0,
-    "runtime_eligible": 0,
-    "runtime_eligibility_basis": "future_effective",
-    "effective_at": "2000-01-01T00:00:00+00:00",
-}
-DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_REGISTRY = {
-    "object_type": "style_observation",
-    "lineage_key": "STY_DEMO_DUE_PROMOTION",
-    "version": 1,
-    "physical_row_id": "style_observation_STY_DEMO_DUE_PROMOTION_v1",
-    "alias_scope": "style_observation:scene:CH001_SC02",
-    "materialize_status": "succeeded",
-    "reindex_status": "succeeded",
-    "verify_status": "succeeded",
-}
-DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ALIAS = {
-    "alias_scope": "style_observation:scene:CH001_SC02",
-    "object_type": "style_observation",
-    "scope": "scene",
-    "scope_ref_id": "CH001_SC02",
-    "collection_family": "style_observation_scene_CH001_SC02",
-    "active_alias": "style_observation_scene_CH001_SC02__candidate__style_observation_STY_ACTIVE_SC02_v1",
-    "candidate_alias": "style_observation_scene_CH001_SC02__candidate__style_observation_STY_DEMO_DUE_PROMOTION_v1",
-    "active_snapshot_version": "snapshot__style_observation_STY_ACTIVE_SC02_v1",
-    "candidate_snapshot_version": "snapshot__style_observation_STY_DEMO_DUE_PROMOTION_v1",
-    "active_embedding_version": "embed__style_observation_STY_ACTIVE_SC02_v1",
-    "candidate_embedding_version": "embed__style_observation_STY_DEMO_DUE_PROMOTION_v1",
-    "verify_status": "succeeded",
-    "sample_query_success": 1,
-}
-DEMO_RUNTIME_OPS_E2E_RECLAIMABLE_VERIFY_JOB = {
-    "job_id": "verify_job_demo_reclaimable",
-    "review_id": None,
-    "status": "running",
-    "object_type": "style_observation",
-    "alias_scope": "style_observation:scene:CH001_SC01",
-    "target_snapshot_version": "snapshot__style_observation_STY_RECLAIMABLE_v1",
-    "target_embedding_version": "embed__style_observation_STY_RECLAIMABLE_v1",
-    "worker_id": "verify-worker-stale",
-    "attempt_no": 2,
-    "heartbeat_at": "2026-04-09T16:00:00+00:00",
-    "lease_expires_at": "2000-01-01T00:00:00+00:00",
-    "started_at": "2026-04-09T15:59:00+00:00",
-    "finished_at": None,
-    "error_text": None,
-}
-DEMO_RUNTIME_OPS_E2E_FAILED_VERIFY_JOB = {
-    "job_id": "verify_job_demo_failed_recent",
-    "review_id": None,
-    "status": "failed",
-    "object_type": "style_observation",
-    "alias_scope": "style_observation:scene:CH001_SC01",
-    "target_snapshot_version": "snapshot__style_observation_STY_FAILED_v1",
-    "target_embedding_version": "embed__style_observation_STY_FAILED_v1",
-    "worker_id": "verify-worker-failed",
-    "attempt_no": 3,
-    "heartbeat_at": "2026-04-09T16:04:00+00:00",
-    "lease_expires_at": "2026-04-09T16:07:00+00:00",
-    "started_at": "2026-04-09T16:02:00+00:00",
-    "finished_at": "2026-04-09T16:05:00+00:00",
-    "error_text": "candidate alias verify failed",
-}
-DEMO_RUNTIME_OPS_E2E_RECOVERY_IDEMPOTENCY_KEY = "approve-review-demo-recovery-followup"
-DEMO_RUNTIME_OPS_E2E_RECOVERY_REQUEST_PAYLOAD = {"review_id": "review_demo_recovery_followup"}
-DEMO_RUNTIME_OPS_E2E_RECOVERY_REQUEST_HASH = canonical_request_hash(
-    "POST",
-    "/api/v1/review-items/{review_id}/approve",
-    DEMO_RUNTIME_OPS_E2E_RECOVERY_REQUEST_PAYLOAD,
-)
-DEMO_RUNTIME_OPS_E2E_REVIEW_IDS = [
-    DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_REVIEW["review_id"],
-    DEMO_RUNTIME_OPS_E2E_RECOVERY_REVIEW["review_id"],
-]
-DEMO_RUNTIME_OPS_E2E_STYLE_IDS = [
-    DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ACTIVE_ROW["style_observation_id"],
-    DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ROW["style_observation_id"],
-    DEMO_RUNTIME_OPS_E2E_RECOVERY_REVIEW["candidate_payload_json"]["lineage_key"],
-]
-DEMO_RUNTIME_OPS_E2E_STYLE_ROW_IDS = [
-    DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ACTIVE_ROW["row_id"],
-    DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ROW["row_id"],
-]
-DEMO_RUNTIME_OPS_E2E_JOB_IDS = [
-    DEMO_RUNTIME_OPS_E2E_RECLAIMABLE_VERIFY_JOB["job_id"],
-    DEMO_RUNTIME_OPS_E2E_FAILED_VERIFY_JOB["job_id"],
-    "reindex_review_demo_recovery_followup",
-    "verify_review_demo_recovery_followup",
-]
-DEMO_RUNTIME_OPS_E2E_EVENT_IDS = [
-    "human_review_idempotency_recovery_approve-review-demo-recovery-followup",
-]
-DEMO_RUNTIME_OPS_E2E_ALIAS_SCOPES = [
-    ("global", "global"),
-    ("scene", "CH001_SC02"),
-    ("scene", "CH001_SC03"),
-]
 DEMO_CHAPTER_OPS_E2E_FIXTURE = "chapter_ops_e2e"
 DEMO_ALL_E2E_FIXTURE = "all_e2e"
 DEMO_PREFLIGHT_BLOCKED_CHAPTER = {
@@ -706,64 +346,8 @@ def _upsert_review_item(session: Any, payload: dict[str, Any]) -> None:
     _upsert(session, ReviewItem, "review_id", payload)
 
 
-def _upsert_version_registry(session: Session, payload: dict[str, Any]) -> None:
-    row = session.execute(
-        select(VersionRegistry).where(VersionRegistry.physical_row_id == payload["physical_row_id"])
-    ).scalar_one_or_none()
-    if row is None:
-        session.add(VersionRegistry(**payload))
-        return
-    for key, value in payload.items():
-        setattr(row, key, value)
-
-
-def _delete_alias_if_scope_empty(session: Session, scope: str, scope_ref_id: str) -> None:
-    remaining_scope_count = session.scalar(
-        select(func.count()).select_from(StyleObservation).where(
-            StyleObservation.scope == scope,
-            func.coalesce(StyleObservation.scope_ref_id, "global") == scope_ref_id,
-        )
-    )
-    if remaining_scope_count == 0:
-        alias = session.get(VectorAliasRegistry, f"style_observation:{scope}:{scope_ref_id}")
-        if alias is not None:
-            session.delete(alias)
-
-
 def _cleanup_demo_runtime(session: Session) -> None:
     chapter_id = DEMO_CHAPTER["chapter_id"]
-    all_demo_review_ids = [DEMO_STYLE_OBSERVATION_REVIEW["review_id"], *DEMO_RUNTIME_OPS_E2E_REVIEW_IDS]
-    all_demo_lineage_keys = [DEMO_STYLE_OBSERVATION_REVIEW["candidate_payload_json"]["lineage_key"], *DEMO_RUNTIME_OPS_E2E_STYLE_IDS]
-    demo_registry_lineage_keys = [
-        *all_demo_lineage_keys,
-        *[item["lineage_key"] for item in DEMO_KNOWLEDGE_VERSION_REGISTRIES],
-    ]
-    all_demo_style_row_ids = [
-        "style_observation_STY_DEMO_001_v1",
-        *DEMO_RUNTIME_OPS_E2E_STYLE_ROW_IDS,
-    ]
-    demo_knowledge_row_ids = [
-        *all_demo_style_row_ids,
-        *[item["row_id"] for item in DEMO_STYLE_RULES],
-        *[item["row_id"] for item in DEMO_BANNED_RULE_CLUSTERS],
-        *[item["row_id"] for item in DEMO_WORLD_RULES],
-        *[item["row_id"] for item in DEMO_CALIBRATION_LINES],
-        *[item["row_id"] for item in DEMO_FORESHADOW_TRACKERS],
-        *[item["row_id"] for item in DEMO_SCENE_SUMMARIES],
-        *[item["row_id"] for item in DEMO_CHAPTER_SUMMARIES],
-    ]
-    all_demo_job_ids = [
-        "reindex_review_demo_style_observation",
-        "verify_review_demo_style_observation",
-        *DEMO_RUNTIME_OPS_E2E_JOB_IDS,
-    ]
-    all_demo_operation_refs = [
-        *all_demo_review_ids,
-        *all_demo_style_row_ids,
-        *all_demo_job_ids,
-        DEMO_RUNTIME_OPS_E2E_RECOVERY_IDEMPOTENCY_KEY,
-        *DEMO_RUNTIME_OPS_E2E_EVENT_IDS,
-    ]
     demo_voice_ids = [item["voice_profile_id"] for item in DEMO_VOICE_PROFILES]
     demo_relation_ids = [item["relation_profile_id"] for item in DEMO_RELATION_PROFILES]
 
@@ -774,114 +358,9 @@ def _cleanup_demo_runtime(session: Session) -> None:
     session.execute(delete(SceneMemory).where(SceneMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id == chapter_id))
-    session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id == chapter_id))
     session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id == chapter_id))
-    session.execute(delete(OperationLog).where(OperationLog.object_ref.in_(all_demo_operation_refs)))
-    session.execute(delete(IdempotencyKey).where(IdempotencyKey.idempotency_key == DEMO_RUNTIME_OPS_E2E_RECOVERY_IDEMPOTENCY_KEY))
-    session.execute(
-        delete(ReindexJob).where(
-            or_(
-                ReindexJob.review_id.in_(all_demo_review_ids),
-                ReindexJob.job_id.in_(all_demo_job_ids),
-            )
-        )
-    )
-    session.execute(
-        delete(VerifyJob).where(
-            or_(
-                VerifyJob.review_id.in_(all_demo_review_ids),
-                VerifyJob.job_id.in_(all_demo_job_ids),
-            )
-        )
-    )
-    session.execute(
-        delete(VersionRegistry).where(
-            or_(
-                VersionRegistry.lineage_key.in_(demo_registry_lineage_keys),
-                VersionRegistry.physical_row_id.in_(demo_knowledge_row_ids),
-            )
-        )
-    )
-    session.execute(
-        delete(StyleObservation).where(
-            or_(
-                StyleObservation.style_observation_id.in_(all_demo_lineage_keys),
-                StyleObservation.source_review_id.in_(all_demo_review_ids),
-                StyleObservation.row_id.in_(all_demo_style_row_ids),
-            )
-        )
-    )
-    session.execute(delete(ReviewItem).where(ReviewItem.review_id.in_(DEMO_RUNTIME_OPS_E2E_REVIEW_IDS)))
     session.execute(delete(VoiceProfile).where(VoiceProfile.voice_profile_id.in_(demo_voice_ids)))
     session.execute(delete(RelationProfile).where(RelationProfile.relation_profile_id.in_(demo_relation_ids)))
-    session.execute(delete(StyleRule).where(StyleRule.style_rule_set_id.in_([item["style_rule_set_id"] for item in DEMO_STYLE_RULES])))
-    session.execute(
-        delete(BannedRuleCluster).where(
-            BannedRuleCluster.banned_cluster_id.in_([item["banned_cluster_id"] for item in DEMO_BANNED_RULE_CLUSTERS])
-        )
-    )
-    session.execute(delete(WorldRule).where(WorldRule.world_rule_id.in_([item["world_rule_id"] for item in DEMO_WORLD_RULES])))
-    session.execute(
-        delete(CalibrationLine).where(
-            CalibrationLine.calibration_line_id.in_([item["calibration_line_id"] for item in DEMO_CALIBRATION_LINES])
-        )
-    )
-    session.execute(
-        delete(ForeshadowTracker).where(
-            ForeshadowTracker.foreshadow_id.in_([item["foreshadow_id"] for item in DEMO_FORESHADOW_TRACKERS])
-        )
-    )
-
-    for scope, scope_ref_id in DEMO_RUNTIME_OPS_E2E_ALIAS_SCOPES:
-        _delete_alias_if_scope_empty(session, scope, scope_ref_id)
-    session.execute(
-        delete(VectorAliasRegistry).where(VectorAliasRegistry.alias_scope == DEMO_CALIBRATION_ALIAS["alias_scope"])
-    )
-
-
-def _seed_runtime_ops_e2e(session: Session) -> list[str]:
-    _upsert_review_item(session, DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_REVIEW)
-    _upsert_review_item(session, DEMO_RUNTIME_OPS_E2E_RECOVERY_REVIEW)
-    _upsert(session, StyleObservation, "row_id", DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ACTIVE_ROW)
-    _upsert(session, StyleObservation, "row_id", DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ROW)
-    _upsert_version_registry(session, DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_REGISTRY)
-    _upsert(session, VectorAliasRegistry, "alias_scope", DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_ALIAS)
-    _upsert(session, VerifyJob, "job_id", DEMO_RUNTIME_OPS_E2E_RECLAIMABLE_VERIFY_JOB)
-    _upsert(session, VerifyJob, "job_id", DEMO_RUNTIME_OPS_E2E_FAILED_VERIFY_JOB)
-    _upsert(
-        session,
-        IdempotencyKey,
-        "idempotency_key",
-        {
-            "idempotency_key": DEMO_RUNTIME_OPS_E2E_RECOVERY_IDEMPOTENCY_KEY,
-            "request_hash": DEMO_RUNTIME_OPS_E2E_RECOVERY_REQUEST_HASH,
-            "status": "started",
-            "response_json": None,
-            "worker_id": "http",
-            "attempt_no": 2,
-            "heartbeat_at": "2026-04-09T16:00:00+00:00",
-            "lease_expires_at": "2000-01-01T00:00:00+00:00",
-        },
-    )
-    session.add(
-        OperationLog(
-            event_type="idempotency_started",
-            object_type="idempotency_key",
-            object_ref=DEMO_RUNTIME_OPS_E2E_RECOVERY_IDEMPOTENCY_KEY,
-            payload_json={
-                "request_hash": DEMO_RUNTIME_OPS_E2E_RECOVERY_REQUEST_HASH,
-                "request_method": "POST",
-                "request_path_template": "/api/v1/review-items/{review_id}/approve",
-                "request_payload": DEMO_RUNTIME_OPS_E2E_RECOVERY_REQUEST_PAYLOAD,
-                "attempt_no": 2,
-                "actor_ref": "system/e2e_fixture",
-            },
-        )
-    )
-    return [
-        DEMO_RUNTIME_OPS_E2E_DUE_PROMOTION_REVIEW["review_id"],
-        DEMO_RUNTIME_OPS_E2E_RECOVERY_REVIEW["review_id"],
-    ]
 
 
 def _cleanup_chapter_ops_runtime(session: Session) -> None:
@@ -895,10 +374,8 @@ def _cleanup_chapter_ops_runtime(session: Session) -> None:
     session.execute(delete(SceneMemory).where(SceneMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id == chapter_id))
     session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id == chapter_id))
-    session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id == chapter_id))
     session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id == chapter_id))
     session.execute(delete(ReviewItem).where(ReviewItem.chapter_id == chapter_id))
-    session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id == chapter_id))
     session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
     session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
     session.execute(delete(ChapterState).where(ChapterState.chapter_id == chapter_id))
@@ -922,10 +399,8 @@ def _cleanup_preflight_e2e_runtime(session: Session) -> None:
     session.execute(delete(SceneMemory).where(SceneMemory.chapter_id.in_(chapter_ids)))
     session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id.in_(chapter_ids)))
     session.execute(delete(ChapterRollingNote).where(ChapterRollingNote.chapter_id.in_(chapter_ids)))
-    session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id.in_(chapter_ids)))
     session.execute(delete(HumanReviewEvent).where(HumanReviewEvent.chapter_id.in_(chapter_ids)))
     session.execute(delete(ReviewItem).where(ReviewItem.chapter_id.in_(chapter_ids)))
-    session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id.in_(chapter_ids)))
     session.execute(delete(SceneRunState).where(SceneRunState.scene_id.in_(scene_ids)))
     session.execute(delete(SceneCard).where(SceneCard.scene_id.in_(scene_ids)))
     session.execute(delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids)))
@@ -973,7 +448,7 @@ def _seed_preflight_e2e(session: Session) -> dict[str, list[str]]:
 
 
 def _seed_runtime_fixture(session: Session, *, fixture: str | None = None) -> dict[str, list[str] | str]:
-    # FE-ALIGN P2: 两部种子作品（潮汐档案/盐镇来信）后端化（独立模块，自带幂等清理）。
+    # FE-ALIGN P2: 两部种子作品（work-a / work-b）后端化（独立模块，自带幂等清理）。
     try:
         from tests.fixture_works import seed_fixture_works
     except ImportError:  # 直接以脚本运行（python tests/fixture_runtime.py）
@@ -990,39 +465,22 @@ def _seed_runtime_fixture(session: Session, *, fixture: str | None = None) -> di
         _upsert(session, VoiceProfile, "row_id", payload)
     for payload in DEMO_RELATION_PROFILES:
         _upsert(session, RelationProfile, "row_id", payload)
-    for payload in DEMO_STYLE_RULES:
-        _upsert(session, StyleRule, "row_id", payload)
-    for payload in DEMO_BANNED_RULE_CLUSTERS:
-        _upsert(session, BannedRuleCluster, "row_id", payload)
-    for payload in DEMO_WORLD_RULES:
-        _upsert(session, WorldRule, "row_id", payload)
-    for payload in DEMO_CALIBRATION_LINES:
-        _upsert(session, CalibrationLine, "row_id", payload)
-    for payload in DEMO_FORESHADOW_TRACKERS:
-        _upsert(session, ForeshadowTracker, "row_id", payload)
     for payload in DEMO_SCENE_SUMMARIES:
         _upsert(session, SceneMemory, "row_id", payload)
     for payload in DEMO_CHAPTER_SUMMARIES:
         _upsert(session, ChapterMemory, "row_id", payload)
-    for payload in DEMO_KNOWLEDGE_VERSION_REGISTRIES:
-        _upsert_version_registry(session, payload)
-    _upsert(session, VectorAliasRegistry, "alias_scope", DEMO_CALIBRATION_ALIAS)
-    _upsert_review_item(session, DEMO_STYLE_OBSERVATION_REVIEW)
-    review_ids = [DEMO_STYLE_OBSERVATION_REVIEW["review_id"]]
+    review_ids: list[str] = []
     extra_chapter_ids: list[str] = []
     extra_scene_ids: list[str] = []
     extra_review_ids: list[str] = []
     if fixture is None:
         pass
-    elif fixture == DEMO_RUNTIME_OPS_E2E_FIXTURE:
-        review_ids.extend(_seed_runtime_ops_e2e(session))
     elif fixture == DEMO_CHAPTER_OPS_E2E_FIXTURE:
         chapter_ops_summary = _seed_chapter_ops_e2e(session)
         extra_chapter_ids.append(chapter_ops_summary["chapter_id"])
         extra_scene_ids.extend(chapter_ops_summary["scene_ids"])
         extra_review_ids.extend(chapter_ops_summary["review_ids"])
     elif fixture == DEMO_ALL_E2E_FIXTURE:
-        review_ids.extend(_seed_runtime_ops_e2e(session))
         chapter_ops_summary = _seed_chapter_ops_e2e(session)
         preflight_summary = _seed_preflight_e2e(session)
         extra_chapter_ids.append(chapter_ops_summary["chapter_id"])
@@ -1056,7 +514,7 @@ def seed_runtime_fixture(session: Session | None = None, *, fixture: str | None 
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--fixture", choices=[DEMO_RUNTIME_OPS_E2E_FIXTURE, DEMO_CHAPTER_OPS_E2E_FIXTURE, DEMO_ALL_E2E_FIXTURE])
+    parser.add_argument("--fixture", choices=[DEMO_CHAPTER_OPS_E2E_FIXTURE, DEMO_ALL_E2E_FIXTURE])
     args = parser.parse_args(argv)
     print(json.dumps(seed_runtime_fixture(fixture=args.fixture), ensure_ascii=False, indent=2))
 

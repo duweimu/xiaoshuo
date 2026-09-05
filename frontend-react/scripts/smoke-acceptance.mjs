@@ -101,21 +101,6 @@ await check("④ 待办：投递卡 → effect 改目录（后端事务闭环）
   if (after.chapters[0].title !== "验收·定稿章题") throw new Error(`title: ${after.chapters[0].title}`);
 });
 
-await check("⑤ 归档：契约 → archived → 章状态 draft（成稿可见）", async () => {
-  const tree = await api(`/api/v2/projects/${pid}/catalog`);
-  const cid = tree.chapters[0].chapter_id;
-  await page.evaluate(async (args) => {
-    const H = { "Content-Type": "application/json" };
-    const base = `${args.api}/api/v2/projects/${args.pid}/longform/chapters/${args.cid}/contract`;
-    await fetch(base, { method: "PUT", headers: H, body: JSON.stringify({ constraints: [{ text: "验收约束" }] }) });
-    for (const s of ["ready", "dispatched", "archived"]) {
-      await fetch(`${base}/transition`, { method: "POST", headers: { ...H, "X-Idempotency-Key": "acc-t-" + s + Date.now() }, body: JSON.stringify({ status: s, force: true }) });
-    }
-  }, { api: API, pid, cid });
-  const after = await api(`/api/v2/projects/${pid}/catalog`);
-  if (after.chapters[0].state !== "draft") throw new Error(`state: ${after.chapters[0].state}`);
-});
-
 await check("⑥ 跨会话：清缓存重载 → 目录/正文/统计/章题都在", async () => {
   await page.evaluate((args) => {
     localStorage.clear();

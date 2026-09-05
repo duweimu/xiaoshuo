@@ -12,8 +12,7 @@ export function domainChunk(moduleId) {
   if (/^(ws-author|ws-chapter-run)/.test(source)) return "domain-author";
   if (/^ws-library/.test(source)) return "domain-library";
   if (/^ws-manuscripts/.test(source)) return "domain-manuscripts";
-  if (/^(ws-quality|ws-eval|ws-cost)/.test(source)) return "domain-quality";
-  if (/^ws-ops/.test(source)) return "domain-operations";
+  if (/^(ws-quality|ws-cost)/.test(source)) return "domain-quality";
   if (/^(ws-settings|ws-ai-providers)/.test(source)) return "domain-settings";
   return undefined;
 }

@@ -7,30 +7,18 @@ from sqlalchemy import func, select
 
 from novel_system.db.models import (
     AttemptTracker,
-    BannedRuleCluster,
-    CalibrationLine,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
     ChapterState,
     FinalScene,
-    ForeshadowTracker,
     HumanReviewEvent,
-    IdempotencyKey,
-    OperationLog,
-    ReindexJob,
     ReviewItem,
     SceneBundle,
     SceneCard,
     SceneDraft,
     SceneMemory,
     SceneRunState,
-    StyleObservation,
-    StyleRule,
-    VectorAliasRegistry,
-    VerifyJob,
-    VersionRegistry,
-    WorldRule,
 )
 import pytest
 
@@ -71,13 +59,13 @@ def test_fixture_runtime_chapter_ending_scene_runs_to_final_scene(session) -> No
     assert result["hard_qc"]["branch"] != "rewrite_partial", result
 
 
-def test_fixture_runtime_creates_first_chapter_and_review_item(session) -> None:
+def test_fixture_runtime_creates_first_chapter_and_fixture_works(session) -> None:
     summary = seed_runtime_fixture(session)
     session.commit()
 
     assert summary["chapter_id"] == "CH001"
     assert summary["scene_ids"] == ["CH001_SC01", "CH001_SC02", "CH001_SC03"]
-    assert summary["review_ids"] == ["review_demo_style_observation"]
+    assert summary["review_ids"] == []
     # 夹具还会内联两部夹具作品（work-a/work-b 完整目录）；runtime 夹具自身仍是 1 章 3 场。
     fixture_projects = ("work-a", "work-b")
     runtime_chapters = session.scalar(
@@ -97,98 +85,12 @@ def test_fixture_runtime_creates_first_chapter_and_review_item(session) -> None:
     )
     assert fe_chapters > 0
     assert _count_rows(session, SceneRunState) == 3
-    # 1 条 runtime review + work-a 的 5 张待办卡 + 3 张 canon 裁决卡（item_type=fe_card）
+    # 只剩 work-a 的 5 张待办卡（item_type=fe_card）；旧式 legacy 候选行已退役
     legacy_reviews = session.scalar(
         select(func.count()).select_from(ReviewItem).where(ReviewItem.item_type != "fe_card")
     )
-    assert legacy_reviews == 1
-    assert _count_rows(session, ReviewItem) == 1 + 5 + 3
-    # work-a 锚点库 = 6 设定 + 6 悬念债 + 4 故事线 + 3 弧线
-    from novel_system.db.models import ChapterAuditFinding, LongformAnchor
-
-    fixture_anchors = session.scalar(
-        select(func.count()).select_from(LongformAnchor).where(LongformAnchor.project_id == "work-a")
-    )
-    # H1：+5 条可检索池（status=faded 的记忆预算条目）
-    assert fixture_anchors == 6 + 6 + 4 + 3 + 5
-    faded = session.scalar(
-        select(func.count()).select_from(LongformAnchor).where(
-            LongformAnchor.project_id == "work-a", LongformAnchor.status == "faded"
-        )
-    )
-    assert faded == 5
-    # 扩展审计层 = 3 canon 冲突 + 2 空降 + 3 因果 + 4 认知态
-    fixture_findings = session.scalar(
-        select(func.count()).select_from(ChapterAuditFinding).where(ChapterAuditFinding.project_id == "work-a")
-    )
-    assert fixture_findings == 3 + 2 + 3 + 4
-    lf3_kinds = session.scalars(
-        select(ChapterAuditFinding.kind).where(ChapterAuditFinding.project_id == "work-a")
-    ).all()
-    assert lf3_kinds.count("unplanted_reveal") == 2
-    assert lf3_kinds.count("causal_break") == 3
-    assert lf3_kinds.count("unfair_clue") == 4
-
-
-def test_fixture_runtime_runtime_ops_e2e_fixture_creates_promotable_and_recoverable_state(session) -> None:
-    summary = seed_runtime_fixture(session, fixture="runtime_ops_e2e")
-    session.commit()
-
-    assert summary["review_ids"] == [
-        "review_demo_style_observation",
-        "review_demo_due_promotion",
-        "review_demo_recovery_followup",
-    ]
-
-    due_promotion_review = session.get(ReviewItem, "review_demo_due_promotion")
-    assert due_promotion_review is not None
-    assert due_promotion_review.status == "approved"
-    assert due_promotion_review.materialize_status == "succeeded"
-
-    due_promotion_row = session.get(StyleObservation, "style_observation_STY_DEMO_DUE_PROMOTION_v1")
-    assert due_promotion_row is not None
-    assert due_promotion_row.runtime_eligibility_basis == "future_effective"
-    assert due_promotion_row.effective_at == "2000-01-01T00:00:00+00:00"
-
-    due_promotion_alias = session.get(VectorAliasRegistry, "style_observation:scene:CH001_SC02")
-    assert due_promotion_alias is not None
-    assert due_promotion_alias.candidate_alias == (
-        "style_observation_scene_CH001_SC02__candidate__style_observation_STY_DEMO_DUE_PROMOTION_v1"
-    )
-    assert due_promotion_alias.verify_status == "succeeded"
-
-    recovery_review = session.get(ReviewItem, "review_demo_recovery_followup")
-    assert recovery_review is not None
-    assert recovery_review.status == "pending"
-    assert recovery_review.materialize_status == "pending"
-
-    stale_key = session.get(IdempotencyKey, "approve-review-demo-recovery-followup")
-    assert stale_key is not None
-    assert stale_key.status == "started"
-    assert stale_key.worker_id == "http"
-    assert stale_key.lease_expires_at == "2000-01-01T00:00:00+00:00"
-
-    stale_log = session.execute(
-        select(OperationLog)
-        .where(
-            OperationLog.object_type == "idempotency_key",
-            OperationLog.object_ref == "approve-review-demo-recovery-followup",
-            OperationLog.event_type == "idempotency_started",
-        )
-    ).scalars().one()
-    assert stale_log.payload_json["request_path_template"] == "/api/v1/review-items/{review_id}/approve"
-    assert stale_log.payload_json["request_payload"] == {"review_id": "review_demo_recovery_followup"}
-
-    reclaimable_verify = session.get(VerifyJob, "verify_job_demo_reclaimable")
-    assert reclaimable_verify is not None
-    assert reclaimable_verify.status == "running"
-    assert reclaimable_verify.worker_id == "verify-worker-stale"
-    assert reclaimable_verify.lease_expires_at == "2000-01-01T00:00:00+00:00"
-
-    failed_verify = session.get(VerifyJob, "verify_job_demo_failed_recent")
-    assert failed_verify is not None
-    assert failed_verify.status == "failed"
-    assert failed_verify.error_text == "candidate alias verify failed"
+    assert legacy_reviews == 0
+    assert _count_rows(session, ReviewItem) == 5
 
 
 def test_fixture_runtime_chapter_ops_e2e_fixture_creates_independent_chapter_runtime_seed(session) -> None:
@@ -218,15 +120,12 @@ def test_fixture_runtime_chapter_ops_e2e_fixture_creates_independent_chapter_run
     assert review_item.status == "pending"
 
 
-def test_fixture_runtime_cli_accepts_runtime_ops_e2e_fixture(capsys) -> None:
-    main(["--fixture", "runtime_ops_e2e"])
+def test_fixture_runtime_cli_accepts_chapter_ops_e2e_fixture(capsys) -> None:
+    main(["--fixture", "chapter_ops_e2e"])
 
     summary = json.loads(capsys.readouterr().out)
-    assert summary["review_ids"] == [
-        "review_demo_style_observation",
-        "review_demo_due_promotion",
-        "review_demo_recovery_followup",
-    ]
+    assert summary["review_ids"] == []
+    assert summary["extra_chapter_ids"] == ["CH200"]
 
 
 def test_fixture_runtime_is_idempotent(session) -> None:
@@ -241,8 +140,7 @@ def test_fixture_runtime_is_idempotent(session) -> None:
     seed_runtime_fixture(session)
     session.commit()
     assert _count_rows(session, SceneCard) == scene_count_after_two_seeds
-    # 1 条 runtime review + work-a 的 5+3 张待办卡，重复 seed 不增行
-    assert _count_rows(session, ReviewItem) == 1 + 5 + 3
+    assert _count_rows(session, ReviewItem) == 5
 
 
 def test_fixture_runtime_creates_traceable_voice_and_relation_profiles(session) -> None:
@@ -272,32 +170,13 @@ def test_fixture_runtime_creates_traceable_voice_and_relation_profiles(session) 
     assert relation["content"] == "reunion tension; B knows slightly more than A"
 
 
-def test_fixture_runtime_creates_samples_for_extended_knowledge_families(session) -> None:
+def test_fixture_runtime_creates_scene_and_chapter_summaries(session) -> None:
     seed_runtime_fixture(session)
     session.commit()
 
-    style_rule = session.get(StyleRule, "style_rule_STYLE_DEMO_MAIN_v1")
-    banned_rule = session.get(BannedRuleCluster, "banned_rule_cluster_BAN_DEMO_REUNION_v1")
-    world_rule = session.get(WorldRule, "world_rule_WR_DEMO_CITY_v1")
-    calibration_line = session.get(CalibrationLine, "calibration_line_CAL_DEMO_001_v1")
-    foreshadow = session.get(ForeshadowTracker, "foreshadow_FORESHADOW_DEMO_001_v1")
     scene_summary = session.get(SceneMemory, "scene_memory_CH001_SC01_summary_v1")
     chapter_summary = session.get(ChapterMemory, "chapter_memory_CH001_summary_v1")
-    calibration_alias = session.get(VectorAliasRegistry, "calibration_line:global:global")
 
-    assert style_rule is not None
-    assert style_rule.active_flag == 1
-    assert style_rule.content == "keep emotion in gesture and pause"
-    assert banned_rule is not None
-    assert banned_rule.content == "do not explain the whole backstory at reunion time"
-    assert world_rule is not None
-    assert world_rule.rule_tier == "hard"
-    assert calibration_line is not None
-    assert calibration_line.runtime_eligibility_basis == "vector_ready"
-    assert calibration_alias is not None
-    assert calibration_alias.active_alias == "calibration_line_global_global__candidate__calibration_line_CAL_DEMO_001_v1"
-    assert foreshadow is not None
-    assert foreshadow.tracker_status == "open"
     assert scene_summary is not None
     assert scene_summary.content == "scene summary for the first reunion beat"
     assert chapter_summary is not None
@@ -310,7 +189,6 @@ def test_fixture_runtime_resets_demo_runtime_state(session) -> None:
 
     chapter_state = session.get(ChapterState, "CH001")
     scene_state = session.get(SceneRunState, "CH001_SC01")
-    review_item = session.get(ReviewItem, "review_demo_style_observation")
 
     chapter_state.current_phase = "archived"
     chapter_state.chapter_passed_scene_count = 2
@@ -319,10 +197,6 @@ def test_fixture_runtime_resets_demo_runtime_state(session) -> None:
     scene_state.current_bundle_id = "bundle_demo"
     scene_state.total_attempt_count = 4
     scene_state.repeat_issue_key = "demo_repeat"
-    review_item.status = "approved"
-    review_item.materialize_status = "succeeded"
-    review_item.approved_item_row_id = "style_observation_demo"
-    review_item.approved_item_id = "STY_DEMO_001"
     session.commit()
 
     seed_runtime_fixture(session)
@@ -331,7 +205,6 @@ def test_fixture_runtime_resets_demo_runtime_state(session) -> None:
 
     reset_chapter_state = session.get(ChapterState, "CH001")
     reset_scene_state = session.get(SceneRunState, "CH001_SC01")
-    reset_review_item = session.get(ReviewItem, "review_demo_style_observation")
 
     assert reset_chapter_state.current_phase == "drafting"
     assert reset_chapter_state.chapter_passed_scene_count == 0
@@ -340,10 +213,6 @@ def test_fixture_runtime_resets_demo_runtime_state(session) -> None:
     assert reset_scene_state.current_bundle_id is None
     assert reset_scene_state.total_attempt_count == 0
     assert reset_scene_state.repeat_issue_key is None
-    assert reset_review_item.status == "pending"
-    assert reset_review_item.materialize_status == "pending"
-    assert reset_review_item.approved_item_row_id is None
-    assert reset_review_item.approved_item_id is None
 
 
 def test_fixture_runtime_clears_demo_derived_records(session) -> None:
@@ -429,71 +298,6 @@ def test_fixture_runtime_clears_demo_derived_records(session) -> None:
             default_action="approve",
         )
     )
-    session.add(
-        StyleObservation(
-            row_id="style_observation_STY_DEMO_001_v1",
-            style_observation_id="STY_DEMO_001",
-            version=1,
-            scope="global",
-            scope_ref_id="global",
-            text="demo style observation",
-            source_review_id="review_demo_style_observation",
-            active_flag=1,
-            runtime_eligible=1,
-            runtime_eligibility_basis="vector_ready",
-        )
-    )
-    session.add(
-        VersionRegistry(
-            object_type="style_observation",
-            lineage_key="STY_DEMO_001",
-            version=1,
-            physical_row_id="style_observation_STY_DEMO_001_v1",
-            alias_scope="style_observation:global:global",
-            materialize_status="succeeded",
-            reindex_status="succeeded",
-            verify_status="succeeded",
-        )
-    )
-    session.add(
-        ReindexJob(
-            job_id="reindex_review_demo_style_observation",
-            review_id="review_demo_style_observation",
-            status="succeeded",
-            object_type="style_observation",
-            alias_scope="style_observation:global:global",
-            target_snapshot_version="snapshot__style_observation_STY_DEMO_001_v1",
-            target_embedding_version="embed__style_observation_STY_DEMO_001_v1",
-        )
-    )
-    session.add(
-        VerifyJob(
-            job_id="verify_review_demo_style_observation",
-            review_id="review_demo_style_observation",
-            status="succeeded",
-            object_type="style_observation",
-            alias_scope="style_observation:global:global",
-            target_snapshot_version="snapshot__style_observation_STY_DEMO_001_v1",
-            target_embedding_version="embed__style_observation_STY_DEMO_001_v1",
-        )
-    )
-    session.add(
-        VectorAliasRegistry(
-            alias_scope="style_observation:global:global",
-            object_type="style_observation",
-            scope="global",
-            scope_ref_id="global",
-            collection_family="style_observation_global_global",
-            active_alias="style_observation_global_global__candidate__style_observation_STY_DEMO_001_v1",
-            candidate_alias=None,
-            active_snapshot_version="snapshot__style_observation_STY_DEMO_001_v1",
-            candidate_snapshot_version=None,
-            active_embedding_version="embed__style_observation_STY_DEMO_001_v1",
-            candidate_embedding_version=None,
-            verify_status="succeeded",
-            sample_query_success=1,
-        )
-    )
     session.commit()
 
     seed_runtime_fixture(session)
@@ -507,55 +311,3 @@ def test_fixture_runtime_clears_demo_derived_records(session) -> None:
     assert _count_rows(session, ChapterMemory) == 1
     assert _count_rows(session, ChapterRollingNote) == 0
     assert _count_rows(session, HumanReviewEvent) == 0
-    assert _count_rows(session, StyleObservation) == 0
-    assert _count_rows(session, VersionRegistry) == 7
-    assert _count_rows(session, ReindexJob) == 0
-    assert _count_rows(session, VerifyJob) == 0
-    assert session.get(VectorAliasRegistry, "style_observation:global:global") is None
-    assert session.get(VectorAliasRegistry, "calibration_line:global:global") is not None
-
-
-def test_fixture_runtime_review_can_verify_and_release_with_memory_backend(client, session) -> None:
-    seed_runtime_fixture(session)
-    session.commit()
-
-    run_scene = client.post(
-        "/api/v1/scenes/CH001_SC01/run/full",
-        headers={
-            "X-Idempotency-Key": "seed-demo-run-scene",
-            "X-Operator-Ref": "ops.seed-demo",
-        },
-    )
-    assert run_scene.status_code == 200
-
-    approved = client.post(
-        "/api/v1/review-items/review_demo_style_observation/approve",
-        headers={
-            "X-Idempotency-Key": "seed-demo-approve-review",
-            "X-Operator-Ref": "ops.seed-demo",
-        },
-    )
-    assert approved.status_code == 200
-
-    verify = client.post(
-        "/api/v1/index/verify/verify_review_demo_style_observation/retry",
-        headers={
-            "X-Idempotency-Key": "seed-demo-verify-review",
-            "X-Operator-Ref": "ops.seed-demo",
-        },
-    )
-    assert verify.status_code == 200
-
-    released = client.post(
-        "/api/v1/review-items/review_demo_style_observation/release",
-        headers={
-            "X-Idempotency-Key": "seed-demo-release-review",
-            "X-Operator-Ref": "ops.seed-demo",
-        },
-    )
-    assert released.status_code == 200
-
-    alias = session.get(VectorAliasRegistry, "style_observation:global:global")
-    assert alias is not None
-    assert alias.active_alias == "style_observation_global_global__candidate__style_observation_STY_DEMO_001_v1"
-    assert alias.candidate_alias is None

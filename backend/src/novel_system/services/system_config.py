@@ -28,6 +28,7 @@ from novel_system.services.llm_client import (
     LLMConfigurationError,
     LLMRequest,
     ProviderRuntimeConfig,
+    SUPPORTED_API_MODES,
     SUPPORTED_CREDENTIAL_MODES,
     SUPPORTED_PROVIDERS,
     parse_model_routing_config,
@@ -69,6 +70,9 @@ LLM_NODE_STATUSES = llm_node_statuses()
 PROBE_ACCOUNTING_OUTPUT_BUDGET = 1024
 # 「测试连接」的超时与长文本生成上限无关，探测必须有限且短。
 PROVIDER_PROBE_TIMEOUT_SECONDS = 30.0
+# task_routing 里唯一不是节点 id 的合法键:parse_model_routing_config 把它映射到
+# style_draft,从不并入 node_routing。剪枝退役节点时必须放过它。
+_TASK_ROUTING_ALIASES = frozenset({"stylize"})
 
 
 def repo_config_dir() -> Path:
@@ -800,11 +804,16 @@ class SystemConfigService:
             self.session.delete(secret)
         # 节点路由不随删而清:仍指向该服务的路由会被就绪检查标为 blocked,
         # 这里带回清单,前端可提示「一键补齐路由」切到默认服务。
+        # 退役节点(不在注册表)的残留路由无需重绑,不列入清单——它们由
+        # sync-missing / role-routes 写路径剪掉。
         current_models = dict(self._category_payload("models").get("parsed") or {})
+        node_catalog = llm_node_catalog()
         orphaned_route_node_ids = sorted(
             node_id
             for node_id, route in dict(current_models.get("node_routing") or {}).items()
-            if isinstance(route, dict) and str(route.get("provider_id") or "") == provider_id
+            if node_id in node_catalog
+            and isinstance(route, dict)
+            and str(route.get("provider_id") or "") == provider_id
         )
         self.session.add(
             OperationLog(
@@ -839,7 +848,11 @@ class SystemConfigService:
             # 否则一次无关的温度/预算调整会让设置页静默丢失三个角色分工。
             "role_assignments": dict(current_models.get("role_assignments") or {}),
         }
-        routing_config = parse_model_routing_config(config_payload)
+        routing_config = _parse_route_config_or_raise(config_payload)
+        # 整表保存是原样写入的高级路径:退役节点的条目照存(overview 仍在
+        # stale_routes 列出),但激活校验对它们惰性——老安装带着已删服务的
+        # 退役路由不能把整个保存卡成 422。真正的剪枝在 sync-missing / role-routes。
+        stale_routes = _retired_route_ids(routing_config.node_routing)
         if _bool_value(payload.get("activate", False)):
             _validate_activating_node_route_bindings(
                 node_routing=routing_config.node_routing,
@@ -854,7 +867,7 @@ class SystemConfigService:
             actor_ref=actor_ref,
         )
         self._finish_mutation()
-        return {"snapshot": _serialize_snapshot(snapshot)}
+        return {"snapshot": _serialize_snapshot(snapshot), "stale_routes": stale_routes}
 
     def sync_missing_llm_node_routes(self, *, payload: dict[str, Any], actor_ref: str) -> dict[str, Any]:
         overview = self.llm_overview()
@@ -898,10 +911,14 @@ class SystemConfigService:
             "retry_budget": dict(current_models.get("retry_budget") or {}),
             "job_runtime": dict(current_models.get("job_runtime") or {}),
         }
+        # 老安装的快照里可能还带着已退役节点的路由(常指向早已删除的服务)。
+        # 这里只补齐目录内节点,退役条目不会被重绑,却会被激活校验拦成 422,
+        # 让「一键补齐路由」永远失败——先剪掉,并在响应里告知剪了什么。
+        pruned_stale_routes = _prune_retired_routes(config_payload)
         synced_node_ids: list[str] = []
         provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
         account_id = _optional_text(provider.get("account_id"))
-        api_mode = _optional_text(provider.get("api_mode")) or "responses"
+        api_mode = _provider_route_api_mode(provider_id, provider)
         credential_mode = _optional_text(provider.get("credential_mode"))
         for node_id in active_llm_node_ids():
             route = overview["node_routes"].get(node_id) or {}
@@ -924,7 +941,7 @@ class SystemConfigService:
             )
             synced_node_ids.append(node_id)
 
-        routing_config = parse_model_routing_config(config_payload)
+        routing_config = _parse_route_config_or_raise(config_payload)
         activate = _bool_value(payload.get("activate", False))
         if activate:
             _validate_activating_node_route_bindings(
@@ -943,6 +960,7 @@ class SystemConfigService:
         return {
             "snapshot": _serialize_snapshot(snapshot),
             "synced_node_ids": synced_node_ids,
+            "pruned_stale_routes": pruned_stale_routes,
             "overview": self.llm_overview(),
         }
 
@@ -1041,6 +1059,8 @@ class SystemConfigService:
         node_routing = dict(current_models.get("node_routing") or {})
         task_routing = dict(current_models.get("task_routing") or {})
         role_assignments = dict(current_models.get("role_assignments") or {})
+        # 同 sync-missing:退役节点的残留路由不随分工前滚,剪掉并回报。
+        pruned_stale_routes = _prune_retired_routes({"node_routing": node_routing, "task_routing": task_routing})
 
         applied: dict[str, dict[str, Any]] = {}
         for slot_id, binding in assignments.items():
@@ -1080,7 +1100,7 @@ class SystemConfigService:
 
             provider_type = str(provider.get("provider_type") or provider.get("provider") or "openai_compatible")
             account_id = _optional_text(provider.get("account_id"))
-            api_mode = _optional_text(provider.get("api_mode")) or "responses"
+            api_mode = _provider_route_api_mode(provider_id, provider)
             credential_mode = _optional_text(provider.get("credential_mode"))
             slot_node_ids = role_slot_node_ids(slot.slot_id)
             for node_id in slot_node_ids:
@@ -1108,7 +1128,7 @@ class SystemConfigService:
             "job_runtime": dict(current_models.get("job_runtime") or {}),
             "role_assignments": role_assignments,
         }
-        routing_config = parse_model_routing_config(config_payload)
+        routing_config = _parse_route_config_or_raise(config_payload)
         activate = _bool_value(payload.get("activate", True))
         if activate:
             # 只校验本次触达的槽内节点:允许「先把写作主力分出去」的渐进配置,
@@ -1134,6 +1154,7 @@ class SystemConfigService:
         return {
             "snapshot": _serialize_snapshot(snapshot),
             "applied": applied,
+            "pruned_stale_routes": pruned_stale_routes,
             "overview": self.llm_overview(),
         }
 
@@ -1532,6 +1553,14 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("provider base_url is required")
     models = payload.get("models") if isinstance(payload.get("models"), list) else []
     provider_options = payload.get("provider_options") if isinstance(payload.get("provider_options"), dict) else {}
+    # api_mode 决定节点路由的端点(chat/responses);写错的值会在之后的
+    # role-routes / sync-missing 解析路由时才炸成 LLMConfigurationError,这里就拦住。
+    api_mode = str(payload.get("api_mode") or adapter_registry()[provider_type].default_api_mode)
+    if api_mode not in SUPPORTED_API_MODES:
+        raise ValueError(
+            f"provider {provider_id} has unsupported api_mode {api_mode}; "
+            f"expected one of {', '.join(sorted(SUPPORTED_API_MODES))}"
+        )
     return {
         "provider_id": provider_id,
         "provider_type": provider_type,
@@ -1539,7 +1568,7 @@ def _normalize_provider_payload(payload: dict[str, Any]) -> dict[str, Any]:
         "base_url": base_url,
         "enabled": _bool_value(payload.get("enabled", True)),
         "credential_mode": credential_mode,
-        "api_mode": str(payload.get("api_mode") or adapter_registry()[provider_type].default_api_mode),
+        "api_mode": api_mode,
         "models": _normalize_provider_model_ids(models),
         "provider_options": dict(provider_options),
     }
@@ -1754,6 +1783,65 @@ def _role_slot_overview(node_routes: dict[str, dict[str, Any]]) -> list[dict[str
     return slots
 
 
+def _retired_route_ids(*routing_tables: dict[str, Any]) -> list[str]:
+    """路由表里已退役的键:不在节点注册表(reserved 节点仍在表内),也不是 task 别名。"""
+    node_catalog = llm_node_catalog()
+    return sorted(
+        {
+            str(key)
+            for table in routing_tables
+            for key in table
+            if key not in node_catalog and key not in _TASK_ROUTING_ALIASES
+        }
+    )
+
+
+def _prune_retired_routes(config_payload: dict[str, Any]) -> list[str]:
+    """就地剪掉 node_routing / task_routing 里退役节点的路由,返回剪掉的 id(已排序)。
+
+    parse_model_routing_config 会把 task_routing 并入 node_routing,所以两张表都得剪,
+    否则退役条目会在下一次解析时重新冒出来;在解析之前剪,退役条目自身的字段错误也
+    不会再阻塞保存。
+    """
+    pruned: set[str] = set()
+    for table_name in ("node_routing", "task_routing"):
+        table = config_payload.get(table_name)
+        if not isinstance(table, dict):
+            continue
+        for key in _retired_route_ids(table):
+            del table[key]
+            pruned.add(key)
+    return sorted(pruned)
+
+
+def _parse_route_config_or_raise(config_payload: dict[str, Any]):
+    """路由解析错误(某节点 api_mode / response_format 写错等)是作者可修的配置问题,
+    必须以 422 + 点名节点的消息回到设置页,而不是漏成 500 INTERNAL_ERROR。"""
+    try:
+        return parse_model_routing_config(config_payload)
+    except LLMConfigurationError as exc:
+        raise DomainError(
+            "CONFIG_ROUTE_INVALID",
+            f"LLM node route config is invalid: {exc.message}",
+            status_code=422,
+            details={"llm_error_code": exc.code},
+        ) from exc
+
+
+def _provider_route_api_mode(provider_id: str, provider: dict[str, Any]) -> str:
+    """把服务声明的 api_mode 展开到节点路由前先校验:老快照里的非法值会让路由解析
+    在下游炸成 500,这里改为 422 并点名该服务。"""
+    api_mode = _optional_text(provider.get("api_mode")) or "responses"
+    if api_mode not in SUPPORTED_API_MODES:
+        raise DomainError(
+            "CONFIG_PROVIDER_INVALID",
+            f"provider {provider_id} has unsupported api_mode {api_mode}; "
+            f"set it to one of {', '.join(sorted(SUPPORTED_API_MODES))} and save the provider again",
+            status_code=422,
+        )
+    return api_mode
+
+
 def _validate_activating_node_route_bindings(
     *,
     node_routing: dict[str, Any],
@@ -1763,8 +1851,13 @@ def _validate_activating_node_route_bindings(
     missing_models: list[str] = []
     not_ready_providers: list[str] = []
     reserved_nodes = reserved_llm_node_ids()
+    node_catalog = llm_node_catalog()
     for node_id, task_config in node_routing.items():
         if node_id in reserved_nodes:
+            continue
+        if node_id not in node_catalog:
+            # 退役节点的残留路由是惰性的:不参与激活校验(它常指向已删除的服务),
+            # 由写路径剪枝、overview 的 stale_routes 展示。
             continue
         provider_id = task_config.provider_id
         if not provider_id or provider_id not in providers:

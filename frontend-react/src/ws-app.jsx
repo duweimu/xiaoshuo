@@ -47,10 +47,7 @@ const LazyWsAuthor = lazySnowNamed(() => import("./ws-author.jsx"), "WsAuthor");
 const LazyWsScene = lazyNamed(() => import("./ws-scene.jsx"), "WsScene");
 const LazyWsManuscripts = lazyNamed(() => import("./ws-manuscripts.jsx"), "WsManuscripts");
 const LazyWsQuality = lazyNamed(() => import("./ws-quality.jsx"), "WsQuality");
-const LazyWsEval = lazyNamed(() => import("./ws-eval.jsx"), "WsEval");
 const LazyWsCost = lazyNamed(() => import("./ws-cost.jsx"), "WsCost");
-const LazyWsIndex = lazyNamed(() => import("./ws-ops.jsx"), "WsIndex");
-const LazyWsInterop = lazyNamed(() => import("./ws-ops.jsx"), "WsInterop");
 const LazyWsSettings = lazyNamed(() => import("./ws-settings.jsx"), "WsSettings");
 const LazyWriterRoom = lazyNamed(() => import("./ws-writer.jsx"), "WriterRoom");
 const LazyWrRecoveryCenter = lazyNamed(() => import("./wr-recovery-center.jsx"), "WrRecoveryCenter");
@@ -112,15 +109,12 @@ const WS_NAV_GROUPS = [
       { id: "scene",       label: "AI 起草台", icon: "Play" },
       { id: "manuscripts", label: "成稿中心", icon: "BookOpen" },
       { id: "quality",     label: "文学质量", icon: "Microscope" },
-      { id: "eval",        label: "盲评实验", icon: "Flask" },
     ],
   },
   {
     id: "ops", label: "运维工具", advanced: true,
     items: [
       { id: "cost",    label: "成本看板", icon: "Coins" },
-      { id: "index",   label: "发布索引", icon: "UploadCloud" },
-      { id: "interop", label: "互操作与导出", icon: "FileInput" },
     ],
   },
   {
@@ -260,10 +254,7 @@ function App() {
       case "scene":       return <LazyWsScene go={go} t={t} />;
       case "manuscripts": return <LazyWsManuscripts go={go} />;
       case "quality":     return <LazyWsQuality go={go} />;
-      case "eval":        return <LazyWsEval go={go} />;
       case "cost":        return <LazyWsCost go={go} />;
-      case "index":       return <LazyWsIndex go={go} />;
-      case "interop":     return <LazyWsInterop go={go} />;
       case "settings":    return <LazyWsSettings go={go} t={t} setTweak={setTweak} />;
       case "trash":       return <LazyWsTrash go={go} />;
       case "writer":      return <div className="ws-writer-mount"><LazyWriterRoom t={t} setTweak={setTweak} go={go} onExit={() => go("home")} /></div>;

@@ -284,15 +284,15 @@ def test_llm_overview_marks_default_routes_without_provider_as_not_ready(client)
     assert response.status_code == 200
     payload = response.json()["data"]
     assert "node_catalog" in payload
-    assert payload["node_catalog"]["project_outline_plan"]["status"] == "active"
+    assert payload["node_catalog"]["snowflake_step_candidates"]["status"] == "active"
     assert payload["node_catalog"]["writer_deep_review"]["group"] == "deep_review"
-    assert payload["node_catalog"]["scene_auto_rewrite"]["requires_llm"] is True
+    assert payload["node_catalog"]["style_draft"]["requires_llm"] is True
     assert payload["providers"] == {}
     assert payload["readiness"]["provider_count"] == 0
     assert payload["readiness"]["configured_route_count"] > 0
     assert payload["readiness"]["ready_route_count"] == 0
     assert payload["readiness"]["ready"] is False
-    # 审计 P-10：文件配置现已覆盖全部活跃节点（含 project_outline_plan /
+    # 审计 P-10：文件配置现已覆盖全部活跃节点（含 snowflake_step_candidates /
     # writer_deep_review 等此前的缺口）——"未就绪"只应剩 provider 未配一个原因。
     assert payload["missing_active_routes"] == []
     route = payload["node_routes"]["neutral_draft"]
@@ -328,16 +328,16 @@ def test_llm_sync_missing_routes_populates_all_active_nodes(client, monkeypatch)
 
     assert response.status_code == 200
     payload = response.json()["data"]
-    assert "project_outline_plan" in payload["synced_node_ids"]
+    assert "snowflake_step_candidates" in payload["synced_node_ids"]
     assert "writer_deep_review" in payload["synced_node_ids"]
-    assert "scene_auto_rewrite" in payload["synced_node_ids"]
+    assert "style_draft" in payload["synced_node_ids"]
     assert payload["snapshot"]["active"] is True
 
     overview = client.get("/api/v1/system-config/llm").json()["data"]
     assert overview["missing_active_routes"] == []
-    assert overview["node_routes"]["project_outline_plan"]["ready"] is True
+    assert overview["node_routes"]["snowflake_step_candidates"]["ready"] is True
     assert overview["node_routes"]["writer_deep_review"]["provider_id"] == "local_qwen"
-    assert overview["node_routes"]["scene_auto_rewrite"]["model"] == "Qwen3-14B-Q8_0.gguf"
+    assert overview["node_routes"]["style_draft"]["model"] == "Qwen3-14B-Q8_0.gguf"
 
 
 def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeypatch) -> None:
@@ -375,7 +375,7 @@ def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeyp
         headers=ADMIN_HEADERS,
         json={
             "node_routing": {
-                "project_outline_plan": dict(route_config),
+                "snowflake_step_candidates": dict(route_config),
                 # 模拟老安装：节点已从注册表退役，但活动快照仍带着它的路由
                 "reference_profile_synthesize": dict(route_config),
             },
@@ -387,7 +387,7 @@ def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeyp
     overview = client.get("/api/v1/system-config/llm").json()["data"]
     assert overview["stale_routes"] == ["reference_profile_synthesize"]
     assert "reference_profile_synthesize" not in overview["node_routes"]
-    assert overview["node_routes"]["project_outline_plan"]["configured"] is True
+    assert overview["node_routes"]["snowflake_step_candidates"]["configured"] is True
     blocked_ids = {route["node_id"] for route in overview["blocked_routes"]}
     assert "reference_profile_synthesize" not in blocked_ids
     readiness_blocked = {route["node_id"] for route in overview["readiness"]["blocked_routes"]}
@@ -397,13 +397,13 @@ def test_llm_overview_quarantines_stale_routes_for_retired_nodes(client, monkeyp
 def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
     session.add(
         LlmCall(
-            llm_call_id="llm_call_offline_scene_auto_rewrite_test",
+            llm_call_id="llm_call_offline_style_draft_test",
             scope_type="scene",
             scope_id="SC_AUDIT",
             provider="offline_deterministic",
             model="scene-auto-rewrite-policy",
-            node_id="scene_auto_rewrite",
-            step="scene_auto_rewrite",
+            node_id="style_draft",
+            step="style_draft",
             scene_id="SC_AUDIT",
             chapter_id="CH_AUDIT",
             request_payload_summary={},
@@ -418,11 +418,11 @@ def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
         LlmCall(
             llm_call_id="llm_call_live_project_outline_test",
             scope_type="system",
-            scope_id="project_outline_plan",
+            scope_id="snowflake_step_candidates",
             provider="fake",
             model="fake-model",
-            node_id="project_outline_plan",
-            step="project_outline_plan",
+            node_id="snowflake_step_candidates",
+            step="snowflake_step_candidates",
             request_payload_summary={},
             response_payload_summary={"source": "llm"},
             prompt_tokens=1,
@@ -438,10 +438,10 @@ def test_llm_call_audit_flags_offline_required_nodes(client, session) -> None:
     assert response.status_code == 200
     payload = response.json()["data"]
     assert payload["offline_deterministic_required_count"] == 1
-    assert payload["offline_deterministic_required_calls"][0]["node_id"] == "scene_auto_rewrite"
+    assert payload["offline_deterministic_required_calls"][0]["node_id"] == "style_draft"
     matrix = {item["node_id"]: item for item in payload["required_node_matrix"]}
-    assert matrix["project_outline_plan"]["success_count"] == 1
-    assert matrix["scene_auto_rewrite"]["offline_deterministic_count"] == 1
+    assert matrix["snowflake_step_candidates"]["success_count"] == 1
+    assert matrix["style_draft"]["offline_deterministic_count"] == 1
 
 
 def test_llm_node_route_activation_requires_existing_provider_binding(client, monkeypatch) -> None:
@@ -908,7 +908,7 @@ def test_llm_config_provider_secret_and_node_routes_do_not_leak_credentials(clie
     assert overview_payload["node_routes"]["style_draft"]["model"] == "gpt-5.4"
     assert overview_payload["node_routes"]["style_patch"]["configured"] is False
     assert overview_payload["readiness"]["ready"] is False
-    assert "project_outline_plan" in overview_payload["missing_active_routes"]
+    assert "snowflake_step_candidates" in overview_payload["missing_active_routes"]
     assert "style_patch" in overview_payload["missing_active_routes"]
     assert overview_payload["readiness"]["ready_route_count"] >= 2
     assert overview_payload["readiness"]["blocked_route_count"] > 0
@@ -986,7 +986,7 @@ def test_llm_provider_delete_removes_secret_and_reassigns_default(client, sessio
         headers=ADMIN_HEADERS,
         json={
             "node_routing": {
-                "project_outline_plan": {
+                "snowflake_step_candidates": {
                     "provider": "openai",
                     "provider_id": "openai_primary",
                     "model": "gpt-5.4",
@@ -1011,7 +1011,7 @@ def test_llm_provider_delete_removes_secret_and_reassigns_default(client, sessio
     payload = delete_response.json()["data"]
     assert payload["deleted_provider_id"] == "openai_primary"
     assert payload["default_provider_id"] == "openai_backup"
-    assert payload["orphaned_route_node_ids"] == ["project_outline_plan"]
+    assert payload["orphaned_route_node_ids"] == ["snowflake_step_candidates"]
 
     secret_ids = set(session.execute(select(SystemSecret.secret_id)).scalars())
     assert "llm_provider:openai_primary:api_key" not in secret_ids
@@ -1020,7 +1020,7 @@ def test_llm_provider_delete_removes_secret_and_reassigns_default(client, sessio
     overview = client.get("/api/v1/system-config/llm").json()["data"]
     assert "openai_primary" not in overview["providers"]
     assert overview["default_provider_id"] == "openai_backup"
-    orphaned_route = overview["node_routes"]["project_outline_plan"]
+    orphaned_route = overview["node_routes"]["snowflake_step_candidates"]
     assert orphaned_route["ready"] is not True
 
     missing_response = client.delete(

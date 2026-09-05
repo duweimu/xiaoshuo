@@ -215,18 +215,13 @@ class TrashService:
             AttemptTracker,
             AuthorDraftProposal,
             AuthorDraftRevision,
-            AuthorStructureCandidate,
-            AutoRewriteRun,
             ChapterMemory,
             ChapterRollingNote,
             FinalScene,
-            ForeshadowTracker,
             GenerationPlanningArtifact,
             HumanReviewEvent,
             LlmCall,
             LlmCallAttempt,
-            LongformDiagnosticCard,
-            LongformStructureGuidance,
             PassagePatchCandidate,
             QcReport,
             ReviewItem,
@@ -236,8 +231,6 @@ class TrashService:
             SceneDraft,
             SceneExecutionContract,
             SceneMemory,
-            SceneQualityContract,
-            StagedBackfill,
             StoryCharacter,
             WriterEvaluation,
         )
@@ -273,16 +266,13 @@ class TrashService:
                 ChapterRollingNote,
                 SceneBundle,
                 SceneBlueprint,
-                SceneQualityContract,
                 SceneExecutionContract,
-                AutoRewriteRun,
             ):
                 self.session.execute(delete(model).where(model.scene_id.in_(scene_ids)))
 
         # —— chapter 维度派生表 ——
         if chapter_ids:
             self.session.execute(delete(ChapterMemory).where(ChapterMemory.chapter_id.in_(chapter_ids)))
-            self.session.execute(delete(StagedBackfill).where(StagedBackfill.chapter_id.in_(chapter_ids)))
 
         # —— scene ∪ chapter 双列维度（行可能只挂其中一列）——
         if scene_ids or chapter_ids:
@@ -291,11 +281,9 @@ class TrashService:
                 WriterEvaluation,
                 RevisionCandidate,
                 PassagePatchCandidate,
-                AuthorStructureCandidate,
                 AttemptTracker,
                 HumanReviewEvent,
                 GenerationPlanningArtifact,
-                LongformDiagnosticCard,
             ):
                 self.session.execute(
                     delete(model).where(
@@ -303,23 +291,6 @@ class TrashService:
                         | model.chapter_id.in_(chapter_ids or [""])
                     )
                 )
-            # 章/场景/角色 scope 的长篇指导（global scope 不动）
-            self.session.execute(
-                delete(LongformStructureGuidance).where(
-                    (
-                        (LongformStructureGuidance.scope_type == "chapter")
-                        & LongformStructureGuidance.scope_ref_id.in_(chapter_ids or [""])
-                    )
-                    | (
-                        (LongformStructureGuidance.scope_type == "scene")
-                        & LongformStructureGuidance.scope_ref_id.in_(scene_ids or [""])
-                    )
-                    | (
-                        (LongformStructureGuidance.scope_type == "character")
-                        & LongformStructureGuidance.scope_ref_id.in_(character_ids or [""])
-                    )
-                )
-            )
 
         # legacy ReviewItem/LlmCall 行可能只挂 scene/chapter 列
         if scene_ids or chapter_ids:
@@ -341,8 +312,6 @@ class TrashService:
             delete(LlmCallAttempt).where(LlmCallAttempt.llm_call_id.in_(llm_call_ids))
         )
         self.session.execute(delete(LlmCall).where(llm_call_scope))
-        if chapter_ids:
-            self.session.execute(delete(ForeshadowTracker).where(ForeshadowTracker.chapter_id.in_(chapter_ids)))
 
         # —— 运行时状态与项目所有权图 ——
         # ChapterRunJob / SceneRunState / ChapterState 没有 project_id，先显式删除。随后由

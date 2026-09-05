@@ -391,17 +391,6 @@ def test_scene_cost_empty_no_calls(session):
     assert result["call_count"] == 0
 
 
-def test_scene_cost_includes_judge_independence(session):
-    _scene(session, "S7")
-    _runstate(session, "S7")
-    _call(session, "S7", node_id="style_draft", model="gpt-5", tokens=100)
-    _call(session, "S7", node_id="near_final_acceptance_review", model="gpt-5", tokens=100)
-    result = ca.scene_cost(session, "S7")
-    assert "judge_independence" in result
-    # 同场景 writer 与评审都用 gpt-5 → observed correlated
-    assert result["judge_independence"]["correlated_judge"] is True
-
-
 # ---- chapter / project rollup ------------------------------------------------
 
 def test_chapter_cost_archived_metrics(session):
@@ -432,7 +421,6 @@ def test_project_cost_rollup(session):
     assert result["calibers"]["provider_actual"]["tokens"] == 0
     assert result["calibers"]["budget_charged"]["tokens"] == 0
     assert result["chapter_count"] == 2
-    assert "judge_independence" in result
     assert result["archived_scene_count"] == 1
 
 

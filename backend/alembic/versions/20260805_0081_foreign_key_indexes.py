@@ -124,7 +124,12 @@ def _repair_core_foreign_keys() -> None:
 def upgrade() -> None:
     _repair_core_foreign_keys()
     inspector = sa.inspect(op.get_bind())
+    existing_tables = set(inspector.get_table_names())
     for table_name, column_name in FOREIGN_KEY_INDEXES:
+        if table_name not in existing_tables:
+            # Tables retired by later revisions never exist on databases that were
+            # materialized from a newer ORM; there is nothing to index.
+            continue
         indexes = inspector.get_indexes(table_name)
         if any((index.get("column_names") or [None])[0] == column_name for index in indexes):
             continue

@@ -434,10 +434,25 @@ def test_get_run_404(client: TestClient) -> None:
 
 
 def test_cancel_run(client: TestClient) -> None:
+    """只有 pending/running 的 run 能取消；已完成（done/failed）的 run 是终态，取消要 409。"""
     book_id = _import_book(client)
-    run_id, _, _ = _seed_full_chain(book_id)
+    done_run_id, _, _ = _seed_full_chain(book_id)
     resp = client.post(
-        f"{PREFIX}/runs/{run_id}/cancel", headers={"X-Idempotency-Key": "cancel_1"}
+        f"{PREFIX}/runs/{done_run_id}/cancel", headers={"X-Idempotency-Key": "cancel_done_1"}
+    )
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "STYLE_REFERENCE_RUN_CANCEL_CONFLICT"
+    with SessionLocal() as session:
+        assert StyleReferenceRepository(session).get_run(done_run_id).status == "done"
+
+    pending_run_id = f"sr_run_pending_{book_id[-6:]}"
+    with SessionLocal() as session:
+        StyleReferenceRepository(session).create_run(
+            run_id=pending_run_id, book_id=book_id, status="pending", phase="extract"
+        )
+        session.commit()
+    resp = client.post(
+        f"{PREFIX}/runs/{pending_run_id}/cancel", headers={"X-Idempotency-Key": "cancel_pending_1"}
     )
     assert resp.status_code == 200
     assert resp.json()["data"]["status"] == "cancelled"

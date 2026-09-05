@@ -86,61 +86,6 @@ def test_narrative_state_digest_uses_scene_project_id(session):
     assert "左臂骨折" in digest
 
 
-def test_character_arc_weights_query_does_not_degrade(session):
-    """P-5：count 查询必须合法执行——降级槽位账本不得出现 character_arc_weights。
-
-    修复前 ``sa_func.count(...).where(...)`` 恒 AttributeError 被吞；
-    现在即使项目没有弧线数据（合法返回 None），也不允许走异常降级路径。
-    """
-    scene = _seed_catalog_style_scene(session, project_id="projp5")
-    builder = BundleBuilder(session)
-    builder._character_arc_weights_prompt(scene)
-    assert "character_arc_weights" not in builder._degraded_slots
-
-
-def test_load_style_baseline_reads_active_binding(session):
-    """P-4：漂移基线必须能经 status='active' 的 binding 读到画像 metrics。
-
-    修复前查询不存在的 ``binding.active`` 列，AttributeError 被吞 → 恒 None。
-    """
-    scene = _seed_catalog_style_scene(session, project_id="projp4")
-    session.add(
-        StyleReferenceBook(
-            book_id="book1",
-            title="参考书",
-            source_kind="txt",
-            cloud_policy="local_only",
-            text_checksum="chk1",
-        )
-    )
-    session.add(StyleReferenceRun(run_id="run1", book_id="book1"))
-    session.add(
-        StyleReferenceProfile(
-            profile_id="prof1",
-            book_id="book1",
-            run_id="run1",
-            title="画像",
-            status="active",
-            profile_json={"metrics_baseline": {"avg_sentence_len": 18.5}},
-        )
-    )
-    session.add(
-        StyleReferenceInjectionBinding(
-            binding_id="bind1",
-            profile_id="prof1",
-            scope="project",
-            scope_ref_id="projp4",
-            task_type="scene_generation",
-            strategy="A",
-            status="active",
-        )
-    )
-    session.flush()
-
-    baseline = Orchestrator(session)._load_style_baseline(scene)
-    assert baseline == {"avg_sentence_len": 18.5}
-
-
 def test_scene_vector_indexing_persists_via_factory(session, monkeypatch):
     """P-7：归档场景索引必须写进 get_vector_store() 工厂实例（进程级可见），
     而不是函数返回即销毁的裸 InMemoryVectorStore。"""

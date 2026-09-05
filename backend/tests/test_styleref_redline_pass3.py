@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import pytest
 
-from novel_system.db.models import StyleObservation
 from novel_system.db.session import SessionLocal
 from novel_system.services.style_reference.cleanup import purge_derived_data
 from novel_system.services.style_reference.config_loader import clear_config_cache
@@ -96,46 +95,3 @@ def test_few_shot_still_renders_for_segments_only_book():
 # ---------------------------------------------------------------------------
 # SR-G3: 删书级联必须清掉物化提升的运行时风格行（否则孤儿仍注入下游成稿）
 # ---------------------------------------------------------------------------
-def test_purge_derived_data_removes_promoted_style_rows():
-    """删书后，源于该书 profile 的 approved StyleObservation 必须删除（修前红：孤儿存活）。"""
-    book_id = "sr_book_g3"
-    run_id = "sr_run_g3"
-    profile_id = "sr_profile_g3pass3doomed"
-    with SessionLocal() as session:
-        repo = StyleReferenceRepository(session)
-        repo.create_book(
-            book_id=book_id, title="t", source_kind="upload", cloud_policy="segments_only",
-            text_checksum="chk_g3", total_chars=10, status="ready",
-            stats_json={"rights_declaration": {
-                "declared": True, "analysis_rights": True, "send_rights": True,
-            }},
-        )
-        repo.create_run(run_id=run_id, book_id=book_id, status="done", phase="done")
-        repo.create_profile(
-            profile_id=profile_id, book_id=book_id, run_id=run_id, title="t",
-            status="active", profile_json={}, coverage_json={}, source_finding_ids_json=[],
-        )
-        # 模拟一条已 approve 提升落库、runtime-active 的风格观察，source_review_id 取 apply 前缀
-        suffix = profile_id[-12:] if len(profile_id) > 12 else profile_id
-        session.add(
-            StyleObservation(
-                row_id="so_g3_doomed",
-                style_observation_id="soid_g3",
-                text="（派生自被删书的运行时风格观察——应随删书清除）",
-                source_review_id=f"review_style_ref_apply_{suffix}_obs0",
-                active_flag=1,
-                runtime_eligible=1,
-                runtime_eligibility_basis="approved",
-            )
-        )
-        session.commit()
-
-    with SessionLocal() as session:
-        purge_derived_data(session, book_id)
-        session.commit()
-
-    with SessionLocal() as session:
-        survivor = session.get(StyleObservation, "so_g3_doomed")
-    assert survivor is None, (
-        "删书后该书 profile 提升的 StyleObservation 仍存活 → 孤儿运行时风格行继续注入下游成稿"
-    )

@@ -7,7 +7,6 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 - GitHub Actions **Backend Tests** job passed.
 - GitHub Actions **Frontend Tests (React mainline)** job passed (vitest + build for `frontend-react`) — this is the authoritative frontend gate.
 - GitHub Actions **React Contract E2E** job passed (fresh Alembic migration, isolated fixture database, real Chromium).
-- GitHub Actions **Legacy Vue Frontend Tests** job passed.
 
 ## Required local checks on this machine
 
@@ -15,13 +14,12 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 - Treat the backend pytest half of `scripts/verify_windows.ps1` as the required true-generation backend lane:
   `backend/tests/test_scene_generation.py` for fake-provider generation,
   `backend/tests/test_qc_engine.py` for fake-provider QC,
-  and `backend/tests/test_chapter_runner.py` plus `backend/tests/test_chapter_runtime.py` for the current chapter runner/runtime path.
+  and `backend/tests/test_chapter_runner.py` for the current chapter runner path.
 - Run the **React mainline contract E2E** (default release gate for the production frontend):
   `powershell -ExecutionPolicy Bypass -File scripts/verify_react_e2e.ps1` — spins up an isolated
   seeded `:8009` backend + React `:5174`, runs `run-smokes.mjs` (acceptance, phase2..7,
   ai-settings, and qa2-ui), then tears the process tree down. Also runs automatically inside
   `scripts/verify_release.ps1`; Linux uses `bash scripts/verify_react_e2e.sh`.
-- Run `cd frontend && npm run test:e2e` only for the legacy Vue lane (or pass `-IncludeLegacyVue` to `verify_release.ps1`).
 - Run `wsl -d Ubuntu-24.04 bash -lc "cd <current-checkout-in-wsl> && bash scripts/verify_wsl_strict.sh"`
 - Before that lane, prepare its isolated WSL environment with
   `cd backend && UV_PROJECT_ENVIRONMENT=.venv-wsl uv sync --locked --extra dev --extra chroma`; the default Windows environment and hashed install intentionally exclude Chroma.
@@ -32,14 +30,11 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 ## Seeded browser E2E acceptance
 
 - Record the `scripts/verify_react_e2e.ps1` result in the PR; this is the production React browser gate.
-- If the optional legacy Vue lane was also run, record `cd frontend && npm run test:e2e` separately and label it as compatibility evidence.
 - Confirm the lane covers project creation/profile, catalog and prose persistence, trash restore/purge,
-  review effects and dedupe, library projection, longform adjudication/archive, AI settings, cache-loss
+  review effects and dedupe, library projection, AI settings, cache-loss
   recovery, deep links, and a console-error sweep.
 - Confirm every suite reseeded successfully; reseed failures must fail closed rather than reuse dirty state.
 - Record the browser lane as deterministic offline fixture evidence, not a real-provider generation run.
-- Treat the optional legacy Vue Playwright lane as separate compatibility evidence; do not attribute its
-  runtime-ops/interop assertions to the React contract lane.
 - Use the manual walkthrough from the README only if the automated E2E lane fails or extra exploratory validation is needed
 
 ## PR evidence
@@ -52,10 +47,7 @@ Use this checklist before converting a Draft PR to ready state or treating the c
 - Record generation evidence: provider, model, prompt hash, finish reason, and final scene row id / archive receipt.
 - Record QC evidence: hard/soft resolution code, next action, pass flag, and any human-review outcome if the lane did not archive cleanly.
 - Describe how `X-Operator-Ref` was validated during the seeded E2E lane.
-- Note which assertions came from `ops.chapter.e2e`, `ops.scene-llm.e2e`, `ops.runtime.e2e`, `ops.knowledge.e2e`, and `ops.interop.e2e`.
-- Note where `/api/v1/knowledge-entries`, `/api/v1/vector-alias-scopes`, `/api/v1/jobs`, `/api/v1/activity-events`, and `/api/v1/target-activity-groups` were revalidated if the change touched runtime shell read contracts.
-- Note where dual pagination (`page/page_size` and `cursor/limit`) was revalidated for review items, human review events, jobs, and scene attempts.
-- Summarize any manual recovery / promotion / human-review follow-up checks only if you ran extra spot-checks beyond E2E.
+- Note where dual pagination (`page/page_size` and `cursor/limit`) was revalidated for review items if the change touched list contracts.
 - Note any environment caveats or skipped checks.
 
 ## Release gate

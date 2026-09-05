@@ -69,20 +69,6 @@ class SnowflakePlannerService:
         self._require_step(step_key)
         latest_by_step = self._latest_by_step(project_id)
 
-        # Advisory gate: suggest setting a controlling idea before step 1
-        ci_author_action = None
-        if step_key == "book_brief" and not self._get_controlling_idea(project_id):
-            from novel_system.services.author_actions import author_action
-            ci_author_action = author_action(
-                "建议先设定控制性理念",
-                "蓝图§4: 控制性理念（一句话的主题判断）是全书的锚，所有后续层级服从它。"
-                "建议在开始雪花法之前设定，但不强制。",
-                target_view="snowflake",
-                target_ref=f"project:{project_id}:controlling_idea",
-                primary_button_label="设定控制性理念",
-                evidence_summary=["controlling_idea=未设定", "gate=advisory"],
-            )
-
         self._require_previous_gates(step_key, latest_by_step)
 
         if body.get("skip"):
@@ -111,10 +97,7 @@ class SnowflakePlannerService:
             self._supersede_same_step(artifact)
             self._mark_downstream_stale(artifact)
         self.session.flush()
-        result = {"artifact": artifact_payload(artifact), "state": self.state(project_id)}
-        if ci_author_action is not None:
-            result["author_action"] = ci_author_action
-        return result
+        return {"artifact": artifact_payload(artifact), "state": self.state(project_id)}
 
     def update_artifact(self, project_id: str, artifact_id: str, payload: dict[str, Any]) -> dict[str, Any]:
         artifact = self._require_artifact(project_id, artifact_id)
@@ -292,28 +275,10 @@ class SnowflakePlannerService:
                 return step["step_key"]
         return None
 
-    def _get_controlling_idea(self, project_id: str) -> str | None:
-        """Return the controlling idea for a project, or None if not set."""
-        try:
-            from novel_system.services.theme_anchor import ThemeAnchorService
-            idea = ThemeAnchorService(self.session).get_controlling_idea(project_id)
-            return idea if idea else None
-        except Exception:
-            _LOGGER.warning(
-                "Controlling-idea lookup degraded project_id=%s",
-                project_id,
-                exc_info=True,
-            )
-            return None
 
     def _build_recommendations(self, project_id: str) -> list[dict[str, Any]]:
         """Build advisory recommendations for the planner state response."""
         recommendations: list[dict[str, Any]] = []
-        if not self._get_controlling_idea(project_id):
-            recommendations.append({
-                "type": "set_controlling_idea",
-                "message": "蓝图§4: 设定控制性理念（一句话的主题判断）作为全书锚点",
-            })
         return recommendations
 
     def _gate_satisfied(self, step_key: str, latest_by_step: dict[str, SnowflakeArtifact]) -> bool:
@@ -611,10 +576,6 @@ def _build_outline_based_artifact(
         short = latest_by_step.get("short_synopsis")
         paragraphs = list((short.artifact_json if short else {}).get("paragraphs") or _synopsis_paragraphs(lines, zh=zh, count=5))
         result = {"paragraphs": paragraphs + _synopsis_paragraphs(lines[::-1], zh=zh, count=max(0, 4 - len(paragraphs)))}
-        # §4: inject reverse causal skeleton as structural constraint
-        skeleton = _build_causal_skeleton_from_synopsis(project, short, zh=zh)
-        if skeleton:
-            result["causal_skeleton"] = skeleton
         return result
 
     if step_key == "character_bibles":
@@ -626,111 +587,9 @@ def _build_outline_based_artifact(
     if step_key == "scene_details":
         scene_list = latest_by_step.get("scene_list")
         scenes = list((scene_list.artifact_json if scene_list else {}).get("scenes") or _outline_scene_list(project, lines, zh=zh))
-        # §4: carry causal skeleton from long_synopsis into scene details
-        long_syn = latest_by_step.get("long_synopsis")
-        causal_skeleton = (long_syn.artifact_json if long_syn else {}).get("causal_skeleton")
-        result = {"scenes": [_outline_scene_detail(scene, index, lines, zh=zh) for index, scene in enumerate(scenes, start=1)]}
-        if causal_skeleton:
-            result["causal_skeleton"] = causal_skeleton
-        return result
+        return {"scenes": [_outline_scene_detail(scene, index, lines, zh=zh) for index, scene in enumerate(scenes, start=1)]}
 
     raise DomainError("SNOWFLAKE_STEP_NOT_FOUND", "unknown snowflake step", status_code=404)
-
-
-def _build_causal_skeleton_from_synopsis(
-    project: StoryProject,
-    short_synopsis_artifact: Any | None,
-    *,
-    zh: bool = True,
-) -> dict[str, Any] | None:
-    """Blueprint §4: build a reverse causal skeleton from the short synopsis.
-
-    Extracts the ending and turning points from the synopsis, then constructs
-    a backward chain: ending → why ending is inevitable → what must precede it → ...
-
-    Returns None if insufficient data; returns a dict with 'chain' and 'controlling_idea'.
-    """
-    try:
-        from novel_system.services.reverse_causal_skeleton import (
-            build_reverse_skeleton,
-            format_skeleton_for_prompt,
-            serialize_skeleton,
-        )
-
-        if short_synopsis_artifact is None:
-            return None
-        synopsis_json = short_synopsis_artifact.artifact_json or {}
-        paragraphs = synopsis_json.get("paragraphs", [])
-        if not paragraphs:
-            return None
-
-        # Extract ending from last paragraph
-        ending = ""
-        turning_points: list[dict[str, str]] = []
-        for idx, para in enumerate(paragraphs):
-            text = para if isinstance(para, str) else para.get("text", str(para))
-            if idx == len(paragraphs) - 1:
-                ending = text
-            elif idx > 0:
-                point = {
-                    "description": text[:200],
-                    "why": f"Step {idx} in the causal chain",
-                }
-                if isinstance(para, dict):
-                    point.update({
-                        "state_before": (
-                            para.get("character_state_before")
-                            or para.get("state_before")
-                            or ""
-                        ),
-                        "state_after": (
-                            para.get("character_state_after")
-                            or para.get("state_after")
-                            or ""
-                        ),
-                        "scene_id": para.get("scene_id"),
-                    })
-                turning_points.append(point)
-
-        if not ending:
-            return None
-
-        # Get controlling idea if available
-        controlling_idea = ""
-        try:
-            # Try to get from DB if we have a session context
-            controlling_idea = project.outline_text.split("\n")[0] if project.outline_text else ""
-        except Exception:
-            controlling_idea = project.title or ""
-
-        skeleton = build_reverse_skeleton(
-            controlling_idea=controlling_idea or (project.title or ""),
-            ending_description=ending,
-            major_turning_points=turning_points,
-            # Synopsis paragraphs are already chronological. The builder keeps
-            # its legacy reverse-input default for external callers, so state
-            # the order explicitly instead of silently reversing execution.
-            turning_points_order="opening_to_ending",
-        )
-
-        integrity_issues = skeleton.validate_chain_integrity()
-        integrity_evaluated = skeleton.integrity_evaluated
-        prompt_text = format_skeleton_for_prompt(skeleton)
-
-        return {
-            **serialize_skeleton(skeleton),
-            "integrity_evaluated": integrity_evaluated,
-            "integrity_valid": not integrity_issues if integrity_evaluated else None,
-            "integrity_issues": integrity_issues,
-            "prompt_text": prompt_text,
-        }
-    except Exception:
-        _LOGGER.warning(
-            "Causal skeleton synthesis degraded project_id=%s",
-            project.project_id,
-            exc_info=True,
-        )
-        return None
 
 
 def artifact_payload(artifact: SnowflakeArtifact | None) -> dict[str, Any] | None:

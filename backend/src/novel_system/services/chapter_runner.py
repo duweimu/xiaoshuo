@@ -7,15 +7,13 @@ from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import select, update
+from sqlalchemy import or_, select, update
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import ChapterRunJob, HumanReviewEvent, SceneCard, SceneRunState, utcnow
 from novel_system.db.session import SessionLocal
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_actions import author_action
-from novel_system.services.project_backtracks import ProjectBacktrackService
-from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.orchestrator import Orchestrator
 from novel_system.services.errors import DomainError
 from novel_system.services.idempotency import owner_lease_ttl_seconds
@@ -109,81 +107,166 @@ class ChapterRunnerService:
         renew_all = _CompositeLeaseRenewer(owner, request_lease)
 
         orchestrator = Orchestrator(self.session)
-        while True:
-            next_scene_id = self._next_scene_id(job, scene_ids)
-            if next_scene_id is None:
-                self._mark_completed(job)
-                self.session.flush()
-                return self._serialize_job(job)
+        # claim 已提交（running + 有效租约）。从这里到 worker 循环里场景执行之外的每一步
+        # （预检门、_set_current_scene、终态写入）都可能抛 DomainError；若任其裸抛，
+        # 任务会永远停在 running：run-status 显示运行中 0%、run-job 命中
+        # RUN_JOB_IN_PROGRESS，租约到期后 prepare_full_run 也不会再拉起 worker。
+        # 所以这里比照场景执行失败：释放归属、按错误码落 failed 并提交，再把原异常抛出。
+        active_scene_id: str | None = None
+        try:
+            while True:
+                active_scene_id = None
+                next_scene_id = self._next_scene_id(job, scene_ids)
+                if next_scene_id is None:
+                    self._mark_completed(job)
+                    self.session.flush()
+                    return self._serialize_job(job)
 
-            gate_error = self._chapter_gate_error(chapter_id, scene_id=next_scene_id)
-            if gate_error is not None:
-                self._mark_blocked(job, blocked_scene_id=next_scene_id, latest_error=gate_error)
-                self.session.flush()
-                return self._serialize_job(job)
+                gate_error = self._chapter_gate_error(chapter_id, scene_id=next_scene_id)
+                if gate_error is not None:
+                    self._mark_blocked(job, blocked_scene_id=next_scene_id, latest_error=gate_error)
+                    self.session.flush()
+                    return self._serialize_job(job)
 
-            self._set_current_scene(job, next_scene_id)
-
-            try:
-                call_parameters = inspect.signature(orchestrator.run_scene).parameters
-                if "execution_id" in call_parameters:
-                    call_kwargs = {
-                        "execution_id": chapter_scene_execution_id(job.job_id, next_scene_id),
-                        "lease_renewer": renew_all,
-                    }
-                    if "run_job_id" in call_parameters or any(
-                        parameter.kind == inspect.Parameter.VAR_KEYWORD
-                        for parameter in call_parameters.values()
-                    ):
-                        call_kwargs["run_job_id"] = job.job_id
-                    result = orchestrator.run_scene(next_scene_id, **call_kwargs)
-                else:  # compatibility for focused test doubles
-                    result = orchestrator.run_scene(next_scene_id)
-            except Exception as exc:  # pragma: no cover - safety net for runtime failures
-                self._release_scene_job_ownership(next_scene_id, job.job_id)
-                logger.exception(
-                    "Chapter scene execution failed job_id=%s chapter_id=%s scene_id=%s",
-                    job.job_id,
-                    chapter_id,
-                    next_scene_id,
-                )
-                public_code = exc.code if isinstance(exc, DomainError) else "CHAPTER_RUN_FAILED"
-                public_message = (
-                    exc.message
-                    if isinstance(exc, DomainError)
-                    else "scene execution failed; see server logs for the request details"
-                )
-                self._mark_failed(
+                active_scene_id = next_scene_id
+                self._set_current_scene(job, next_scene_id)
+                result = self._run_claimed_scene(
+                    orchestrator,
                     job,
-                    current_scene_id=next_scene_id,
-                    error_code=public_code,
-                    error_text=public_message,
+                    chapter_id=chapter_id,
+                    scene_id=next_scene_id,
+                    lease_renewer=renew_all,
                 )
-                self.session.flush()
-                return self._serialize_job(job)
-            self._release_scene_job_ownership(next_scene_id, job.job_id)
+                if result is None:
+                    return self._serialize_job(job)
 
-            if self._scene_requires_human_review(result):
-                self._mark_blocked(
-                    job,
-                    blocked_scene_id=next_scene_id,
-                    latest_error=self._human_review_error(next_scene_id, result),
-                )
-                self.session.flush()
-                return self._serialize_job(job)
+                if self._scene_requires_human_review(result):
+                    self._mark_blocked(
+                        job,
+                        blocked_scene_id=next_scene_id,
+                        latest_error=self._human_review_error(next_scene_id, result),
+                    )
+                    self.session.flush()
+                    return self._serialize_job(job)
 
-            scene_incomplete_error = self._scene_incomplete_error(next_scene_id, result)
-            if scene_incomplete_error is not None:
-                self._mark_blocked(job, blocked_scene_id=next_scene_id, latest_error=scene_incomplete_error)
-                self.session.flush()
-                return self._serialize_job(job)
+                scene_incomplete_error = self._scene_incomplete_error(next_scene_id, result)
+                if scene_incomplete_error is not None:
+                    self._mark_blocked(job, blocked_scene_id=next_scene_id, latest_error=scene_incomplete_error)
+                    self.session.flush()
+                    return self._serialize_job(job)
 
-            self._mark_scene_completed(job, next_scene_id)
-            gate_error = self._chapter_gate_error(chapter_id, scene_id=next_scene_id)
-            if gate_error is not None:
-                self._mark_blocked(job, blocked_scene_id=next_scene_id, latest_error=gate_error)
-                self.session.flush()
-                return self._serialize_job(job)
+                self._mark_scene_completed(job, next_scene_id)
+                gate_error = self._chapter_gate_error(chapter_id, scene_id=next_scene_id)
+                if gate_error is not None:
+                    self._mark_blocked(job, blocked_scene_id=next_scene_id, latest_error=gate_error)
+                    self.session.flush()
+                    return self._serialize_job(job)
+        except DomainError as exc:
+            self._fail_claimed_job(
+                job,
+                scene_id=active_scene_id,
+                error_code=exc.code,
+                error_text=exc.message,
+                author_action=self._domain_error_author_action(exc),
+            )
+            raise
+        except Exception:  # safety net for runtime failures (covered by test_fix_chapter_runner_catalog_scenes)
+            self._fail_claimed_job(
+                job,
+                scene_id=active_scene_id,
+                error_code="CHAPTER_RUN_FAILED",
+                error_text="chapter run failed; see server logs for the request details",
+            )
+            raise
+
+    def _run_claimed_scene(
+        self,
+        orchestrator: Any,
+        job: ChapterRunJob,
+        *,
+        chapter_id: str,
+        scene_id: str,
+        lease_renewer: _CompositeLeaseRenewer,
+    ) -> dict[str, Any] | None:
+        """执行一个场景；执行异常时按失败落库并返回 None（调用方直接序列化任务）。"""
+
+        try:
+            call_parameters = inspect.signature(orchestrator.run_scene).parameters
+            if "execution_id" in call_parameters:
+                call_kwargs = {
+                    "execution_id": chapter_scene_execution_id(job.job_id, scene_id),
+                    "lease_renewer": lease_renewer,
+                }
+                if "run_job_id" in call_parameters or any(
+                    parameter.kind == inspect.Parameter.VAR_KEYWORD
+                    for parameter in call_parameters.values()
+                ):
+                    call_kwargs["run_job_id"] = job.job_id
+                result = orchestrator.run_scene(scene_id, **call_kwargs)
+            else:  # compatibility for focused test doubles
+                result = orchestrator.run_scene(scene_id)
+        except Exception as exc:  # pragma: no cover - safety net for runtime failures
+            self._release_scene_job_ownership(scene_id, job.job_id)
+            logger.exception(
+                "Chapter scene execution failed job_id=%s chapter_id=%s scene_id=%s",
+                job.job_id,
+                chapter_id,
+                scene_id,
+            )
+            public_code = exc.code if isinstance(exc, DomainError) else "CHAPTER_RUN_FAILED"
+            public_message = (
+                exc.message
+                if isinstance(exc, DomainError)
+                else "scene execution failed; see server logs for the request details"
+            )
+            self._mark_failed(
+                job,
+                current_scene_id=scene_id,
+                error_code=public_code,
+                error_text=public_message,
+                author_action=self._domain_error_author_action(exc),
+            )
+            self.session.flush()
+            return None
+        self._release_scene_job_ownership(scene_id, job.job_id)
+        return result if isinstance(result, dict) else {}
+
+    def _fail_claimed_job(
+        self,
+        job: ChapterRunJob,
+        *,
+        scene_id: str | None,
+        error_code: str,
+        error_text: str,
+        author_action: dict[str, Any] | None = None,
+    ) -> None:
+        """claim 之后、场景执行之外的异常兜底：释放场景归属 → failed → commit。
+
+        调用方随后会把原异常继续抛给路由（错误信封照常返回），所以这里必须自己提交，
+        否则 failed 终态会跟着请求事务一起回滚，任务又回到卡死的 running。
+        """
+
+        if error_code == "RUN_OWNER_LEASE_LOST":
+            # 归属已被别的 worker 接管：终态由新 owner 负责，这里再写只会被 fence 拒绝。
+            return
+        try:
+            if scene_id:
+                self._release_scene_job_ownership(scene_id, job.job_id)
+            self._mark_failed(
+                job,
+                current_scene_id=scene_id,
+                error_code=error_code,
+                error_text=error_text,
+                author_action=author_action,
+            )
+            self.session.commit()
+        except Exception:
+            logger.exception(
+                "Failed to mark chapter run job as failed job_id=%s error_code=%s",
+                job.job_id,
+                error_code,
+            )
+            self.session.rollback()
 
     def run_status(self, chapter_id: str) -> dict[str, Any]:
         AuthorLifecycleService(self.session).require_active_chapter(chapter_id)
@@ -221,9 +304,15 @@ class ChapterRunnerService:
             should_start_worker = True
         else:
             previous_status = job.status
+            # 租约已过期的 running 是没人接手的孤儿（worker 崩溃/进程重启/claim 后异常），
+            # _reconcile_job 会把它放回 pending；这种情况必须重新拉起 worker，
+            # 不能因为"之前是 running"就当作已有 worker 在跑。
+            stale_running = self._is_stale_running(job)
             self._reconcile_job(job, scene_ids)
             self._transition_explicit_failed_retry(job)
-            should_start_worker = job.status == JOB_STATUS_PENDING and previous_status != JOB_STATUS_RUNNING
+            should_start_worker = job.status == JOB_STATUS_PENDING and (
+                previous_status != JOB_STATUS_RUNNING or stale_running
+            )
             if job.status == JOB_STATUS_BLOCKED:
                 blocked_scene_id = self._blocked_scene_id(job, scene_ids)
                 if self._chapter_gate_error(chapter_id, scene_id=blocked_scene_id) is None:
@@ -295,9 +384,31 @@ class ChapterRunnerService:
         self.session.flush()
         return job
 
+    @staticmethod
+    def _is_stale_running(job: ChapterRunJob) -> bool:
+        """running 但租约（非空）已过期：没有任何 worker 还持有它。
+
+        与 `_claim_running` 的 CAS 判定同一口径（ISO 字符串比较）。租约为 None 的
+        running 行不算过期——那是遗留/手工行，仍按"有 worker 在跑"处理。
+        """
+
+        if job.status != JOB_STATUS_RUNNING or not job.lease_expires_at:
+            return False
+        return job.lease_expires_at <= datetime.now(UTC).isoformat()
+
     def _reconcile_job(self, job: ChapterRunJob, scene_ids: list[str]) -> None:
+        if self._is_stale_running(job):
+            # 过期租约的 running 对外不能再报"运行中"：回到 pending 让 run-job 重新
+            # 拉起 worker（_claim_running 本来就允许接管这种行，这里只是让状态与之一致）。
+            job.status = JOB_STATUS_PENDING
+            job.lease_expires_at = None
+            job.finished_at = None
         payload = self._payload(job)
-        finalized_scene_ids = self._finalized_scene_ids(scene_ids)
+        # failed 是作者可见的终态：错误码 / author_action 必须一直保留到作者显式重试
+        # （_transition_explicit_failed_retry）。归档步失败时 near-final 早已写下定稿行，
+        # 若仍从场景状态反推"完成"，失败任务会被伪装成 completed / 100% 且错误被清空。
+        failed = job.status == JOB_STATUS_FAILED
+        finalized_scene_ids = set() if failed else self._finalized_scene_ids(scene_ids)
         completed_set = {
             scene_id
             for scene_id in payload.get("completed_scene_ids", [])
@@ -329,7 +440,7 @@ class ChapterRunnerService:
         job.payload_json = payload
         summary = dict(job.result_summary_json or {})
         latest_error = summary.get("latest_error")
-        if blocked_scene_id is None:
+        if blocked_scene_id is None and not failed:
             if next_scene_id is None:
                 latest_error = None
                 job.error_code = None
@@ -350,6 +461,13 @@ class ChapterRunnerService:
         job.result_summary_json = summary
 
     def _finalized_scene_ids(self, scene_ids: list[str]) -> set[str]:
+        """章任务可以跳过的场景：已归档且有定稿行。
+
+        只有定稿行不算完成——near-final 在归档步之前就写下 FinalScene，归档步（章级准定稿
+        评审等）失败或 worker 在这之间崩溃时，场景仍停在 soft_qc_passed 之类的中间态；
+        把它当作完成会让重跑直接跳过归档步、把失败任务推导成 completed。
+        """
+
         if not scene_ids:
             return set()
         states = self.session.execute(
@@ -358,7 +476,7 @@ class ChapterRunnerService:
         return {
             state.scene_id
             for state in states
-            if state.current_final_scene_row_id
+            if state.current_final_scene_row_id and state.scene_status == "archived"
         }
 
     def _claim_running(
@@ -485,14 +603,47 @@ class ChapterRunnerService:
         self._update_summary(job, current_scene_id=scene_id, blocked_scene_id=None, latest_error=None)
         state = self.session.get(SceneRunState, scene_id)
         if state is None:
-            raise DomainError("SCENE_NOT_FOUND", "scene run state not found", status_code=404)
+            # v2 目录（React 章节编排）建的场景只有 SceneCard 没有运行时状态行；
+            # v1 scenes POST / orchestrator / scene_run_jobs 都按同一初始约定惰性补建，
+            # 这里不能再当作 SCENE_NOT_FOUND 拒绝，否则整章一起步就失败。
+            if self.session.get(SceneCard, scene_id) is None:
+                raise DomainError("SCENE_NOT_FOUND", "scene not found", status_code=404)
+            state = SceneRunState(scene_id=scene_id, scene_status="ready")
+            self.session.add(state)
+            self.session.flush()
         if state.active_run_job_id not in {None, job.job_id}:
             raise DomainError(
                 "RUN_JOB_IN_PROGRESS",
                 "scene is owned by another active run job",
                 status_code=409,
             )
-        state.active_run_job_id = job.job_id
+        # 归属必须在把场景交给 Orchestrator 之前落库，而不是只改 ORM 属性：
+        # run_scene → SceneRunCheckpointService.acquire_execution 会 session.refresh(state)，
+        # SQLAlchemy 先失效实例再自动 flush，未 flush 的赋值会被数据库里的旧值（None）覆盖。
+        # 场景级节点容忍 active_run_job_id 为 None，所以整条场景管线照常跑完；只有章级节点
+        # （章尾归档步的 chapter_near_final_review）要求它等于本章任务 id，于是在记账台账
+        # 落行之前被拒（LLM_ACCOUNTING_CONTEXT_INVALID），对外表现为 RUN_CHECKPOINT_OUTPUT_MISSING。
+        # 与 scene_run_jobs.claim_scene_active_job 同口径：CAS 语句 + flush，再刷新 ORM。
+        claimed = self.session.execute(
+            update(SceneRunState)
+            .where(
+                SceneRunState.scene_id == scene_id,
+                or_(
+                    SceneRunState.active_run_job_id.is_(None),
+                    SceneRunState.active_run_job_id == job.job_id,
+                ),
+            )
+            .values(active_run_job_id=job.job_id)
+            .execution_options(synchronize_session=False)
+        )
+        if claimed.rowcount != 1:
+            raise DomainError(
+                "RUN_JOB_IN_PROGRESS",
+                "scene is owned by another active run job",
+                status_code=409,
+            )
+        self.session.flush()
+        self.session.refresh(state)
 
     def _release_scene_job_ownership(self, scene_id: str, job_id: str) -> None:
         self.session.execute(
@@ -562,7 +713,15 @@ class ChapterRunnerService:
             latest_error=None,
         )
 
-    def _mark_failed(self, job: ChapterRunJob, *, current_scene_id: str | None, error_code: str, error_text: str) -> None:
+    def _mark_failed(
+        self,
+        job: ChapterRunJob,
+        *,
+        current_scene_id: str | None,
+        error_code: str,
+        error_text: str,
+        author_action: dict[str, Any] | None = None,
+    ) -> None:
         self._fence_active_owner(job)
         job.status = JOB_STATUS_FAILED
         job.error_code = error_code
@@ -571,78 +730,28 @@ class ChapterRunnerService:
         payload = self._payload(job)
         payload["current_scene_id"] = current_scene_id
         job.payload_json = payload
+        latest_error: dict[str, Any] = {"code": error_code, "message": error_text}
+        if author_action:
+            # 与 blocked 的 latest_error 同形：作者在 run-status 里直接看到该去哪、做什么。
+            latest_error["author_action"] = author_action
         self._update_summary(
             job,
             current_scene_id=current_scene_id,
             blocked_scene_id=None,
-            latest_error={"code": error_code, "message": error_text},
+            latest_error=latest_error,
         )
+
+    @staticmethod
+    def _domain_error_author_action(exc: BaseException) -> dict[str, Any] | None:
+        if not isinstance(exc, DomainError) or not isinstance(exc.details, dict):
+            return None
+        action = exc.details.get("author_action")
+        return dict(action) if isinstance(action, dict) else None
 
     def _chapter_gate_error(self, chapter_id: str, *, scene_id: str | None = None) -> dict[str, Any] | None:
         human_review_error = self._scene_human_review_error(scene_id)
         if human_review_error is not None:
             return human_review_error
-        pending_backtracks = [
-            item
-            for item in ProjectBacktrackService(self.session).pending_for_chapter(chapter_id)
-            if item.scene_id in {None, scene_id}
-        ]
-        if pending_backtracks:
-            first_item = pending_backtracks[0]
-            return {
-                "code": "CHAPTER_RUN_BACKTRACK_REQUIRED",
-                "message": f"chapter run is blocked by pending replanning work: {first_item.scope}",
-                "author_action": author_action(
-                    "章节需要先处理返工",
-                    "当前章节还有待处理返工项。处理完这些结构问题后，章节起草会继续。",
-                    target_view="review",
-                    target_ref=f"backtrack_item:{first_item.item_id}",
-                    primary_button_label="去待处理建议",
-                    evidence_summary=[f"章节：{chapter_id}", f"范围：{first_item.scope}"],
-                ),
-            }
-        chapter_state = ChapterRuntimeService(self.session).chapter_state_payload(chapter_id)
-        manual_hold_reason = chapter_state.get("manual_hold_reason")
-        if isinstance(manual_hold_reason, str) and manual_hold_reason.strip():
-            return {
-                "code": "CHAPTER_RUN_MANUAL_HOLD",
-                "message": "chapter run is blocked by manual hold",
-                "author_action": author_action(
-                    "章节被手动暂停",
-                    "当前章节处于人工暂停状态，请先解除暂停或处理暂停原因。",
-                    target_view="workbench",
-                    target_ref=f"chapter:{chapter_id}",
-                    primary_button_label="去场景工作台",
-                    evidence_summary=[f"章节：{chapter_id}", f"原因：{manual_hold_reason.strip()}"],
-                ),
-            }
-        if chapter_state.get("chapter_backfill_pending_count", 0):
-            return {
-                "code": "CHAPTER_RUN_BACKFILL_PENDING",
-                "message": "chapter run is blocked by pending staged backfill",
-                "author_action": author_action(
-                    "章节有待回填内容",
-                    "当前章节还有标记内容等待回填，先处理这些占位，再继续章节起草。",
-                    target_view="workbench",
-                    target_ref=f"chapter:{chapter_id}",
-                    primary_button_label="去场景工作台",
-                    evidence_summary=[f"章节：{chapter_id}", "状态：待回填"],
-                ),
-            }
-        aggregate_block_reason = chapter_state.get("aggregate_block_reason")
-        if aggregate_block_reason and aggregate_block_reason != "none":
-            return {
-                "code": "CHAPTER_RUN_AGGREGATE_BLOCKED",
-                "message": f"chapter run is blocked by aggregate gate: {aggregate_block_reason}",
-                "author_action": author_action(
-                    "章节汇总暂时被阻塞",
-                    "章节汇总门还没有放行，请先检查当前章节的场景完成度和回填状态。",
-                    target_view="workbench",
-                    target_ref=f"chapter:{chapter_id}",
-                    primary_button_label="去场景工作台",
-                    evidence_summary=[f"章节：{chapter_id}", f"阻塞：{aggregate_block_reason}"],
-                ),
-            }
         return None
 
     def _scene_human_review_error(self, scene_id: str | None) -> dict[str, Any] | None:

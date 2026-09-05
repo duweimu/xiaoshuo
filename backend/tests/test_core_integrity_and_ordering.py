@@ -5,8 +5,6 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from novel_system.db.models import (
-    ChapterAuditFinding,
-    ChapterContract,
     ChapterGoal,
     ChapterRunJob,
     SceneCard,
@@ -322,57 +320,10 @@ def test_scene_purge_is_blocked_by_run_job_instead_of_failing_fk(client, session
         headers={"X-Idempotency-Key": "trash-s-purge-job"},
     )
     assert trashed.status_code == 200, trashed.text
-    purged = client.post(
-        "/api/v1/scenes/purge",
-        json={"scene_ids": ["S_PURGE_JOB"]},
-        headers={"X-Idempotency-Key": "purge-s-purge-job"},
-    )
-    assert purged.status_code == 200, purged.text
-    assert purged.json()["data"]["processed"] == []
-    assert purged.json()["data"]["blocked"][0]["code"] == (
-        "SCENE_PURGE_BLOCKED_RUNTIME_ARTIFACTS"
-    )
+    from novel_system.services.author_lifecycle import AuthorLifecycleService
+
+    purged = AuthorLifecycleService(session).purge_scenes(["S_PURGE_JOB"])
+    assert purged["processed"] == []
+    assert purged["blocked"][0]["code"] == "SCENE_PURGE_BLOCKED_RUNTIME_ARTIFACTS"
 
 
-def test_chapter_purge_removes_contract_and_audit_children(client, session) -> None:
-    session.add(_project("P_PURGE_CHAPTER"))
-    session.add(
-        _chapter(
-            "C_PURGE_CHAPTER",
-            project_id="P_PURGE_CHAPTER",
-            display_order=1,
-            trashed_flag=1,
-        )
-    )
-    session.flush()
-    session.add_all(
-        [
-            ChapterContract(
-                contract_id="contract-purge-chapter",
-                project_id="P_PURGE_CHAPTER",
-                chapter_id="C_PURGE_CHAPTER",
-            ),
-            ChapterAuditFinding(
-                finding_id="finding-purge-chapter",
-                project_id="P_PURGE_CHAPTER",
-                chapter_id="C_PURGE_CHAPTER",
-                text="cross-scene drift",
-            ),
-        ]
-    )
-    session.commit()
-
-    purged = client.post(
-        "/api/v1/chapters/purge",
-        json={"chapter_ids": ["C_PURGE_CHAPTER"]},
-        headers={"X-Idempotency-Key": "purge-c-with-contract"},
-    )
-
-    assert purged.status_code == 200, purged.text
-    assert purged.json()["data"]["processed"] == [
-        {"chapter_id": "C_PURGE_CHAPTER", "scene_ids": []}
-    ]
-    session.expire_all()
-    assert session.get(ChapterAuditFinding, "finding-purge-chapter") is None
-    assert session.get(ChapterContract, "contract-purge-chapter") is None
-    assert session.get(ChapterGoal, "C_PURGE_CHAPTER") is None

@@ -124,24 +124,11 @@ ctx = "manuscripts"; await go(WORK, "manuscripts"); await probe("manuscripts"); 
 const chap = page.locator(".ws-content [class*='chapter'], .ws-content li").first();
 if (await chap.count()) { await chap.click().catch(() => {}); await page.waitForTimeout(600); await shot("10-manuscripts-read"); }
 
-// ---------- 11) longform (advanced) ----------
-ctx = "longform"; await go(WORK, "longform"); await probe("longform"); await shot("11-longform");
-const lfBtns = await page.locator(".ws-content button").allTextContents().catch(() => []);
-rec("buttons", `longform=[${lfBtns.map(s => s.trim()).filter(Boolean).slice(0, 14).join(" | ")}]`);
-
 // ---------- 12) quality ----------
 ctx = "quality"; await go(WORK, "quality"); await probe("quality");
 const qTabs = await page.locator(".ws-content [role='tab'], .ws-content button").allTextContents().catch(() => []);
 for (const t of ["总览", "扫描", "章组", "复审", "文本"]) { if (await clickText(t)) await page.waitForTimeout(450); }
 await shot("12-quality");
-
-// ---------- 13) index (advanced) ----------
-ctx = "index"; await go(WORK, "index"); await probe("index"); await shot("13-index");
-
-// ---------- 14) interop (advanced) ----------
-ctx = "interop"; await go(WORK, "interop"); await probe("interop"); await shot("14-interop");
-const ioBtns = await page.locator(".ws-content button").allTextContents().catch(() => []);
-rec("buttons", `interop=[${ioBtns.map(s => s.trim()).filter(Boolean).slice(0, 14).join(" | ")}]`);
 
 // ---------- 15) settings ----------
 ctx = "settings"; await go(WORK, "settings"); await probe("settings");

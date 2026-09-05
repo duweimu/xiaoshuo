@@ -6,17 +6,11 @@ from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    BannedRuleCluster,
-    CalibrationLine,
     ChapterMemory,
-    ForeshadowTracker,
-    NarrativePattern,
     RelationProfile,
     SceneCard,
     SceneMemory,
-    StyleRule,
     VoiceProfile,
-    WorldRule,
 )
 
 
@@ -68,76 +62,6 @@ class Resolver:
             .order_by(VoiceProfile.version.desc())
         ).scalars().first()
 
-    def resolve_active_style_rules(self, session: Session, scene: SceneCard) -> list[StyleRule]:
-        return session.execute(
-            select(StyleRule)
-            .where(
-                StyleRule.active_flag == 1,
-                StyleRule.runtime_eligible == 1,
-                self._scoped_clause(StyleRule, scene),
-            )
-            .order_by(StyleRule.created_at.asc(), StyleRule.row_id.asc())
-        ).scalars().all()
-
-    def resolve_active_banned_rule_clusters(self, session: Session, scene: SceneCard) -> list[BannedRuleCluster]:
-        return session.execute(
-            select(BannedRuleCluster)
-            .where(
-                BannedRuleCluster.active_flag == 1,
-                BannedRuleCluster.runtime_eligible == 1,
-                self._scoped_clause(BannedRuleCluster, scene),
-            )
-            .order_by(BannedRuleCluster.created_at.asc(), BannedRuleCluster.row_id.asc())
-        ).scalars().all()
-
-    def resolve_active_narrative_patterns(self, session: Session, scene: SceneCard) -> list[NarrativePattern]:
-        return session.execute(
-            select(NarrativePattern)
-            .where(
-                NarrativePattern.active_flag == 1,
-                NarrativePattern.runtime_eligible == 1,
-                self._scoped_clause(NarrativePattern, scene),
-            )
-            .order_by(NarrativePattern.created_at.asc(), NarrativePattern.row_id.asc())
-        ).scalars().all()
-
-    def resolve_active_world_rules(self, session: Session, scene: SceneCard) -> list[WorldRule]:
-        now = datetime.now(UTC).isoformat()
-        return session.execute(
-            select(WorldRule)
-            .where(
-                WorldRule.active_flag == 1,
-                WorldRule.runtime_eligible == 1,
-                self._scoped_clause(WorldRule, scene),
-                or_(WorldRule.expires_at.is_(None), WorldRule.expires_at > now),
-            )
-            .order_by(WorldRule.created_at.asc(), WorldRule.row_id.asc())
-        ).scalars().all()
-
-    def resolve_active_calibration_lines(self, session: Session, scene: SceneCard) -> list[CalibrationLine]:
-        rows = session.execute(
-            select(CalibrationLine)
-            .where(
-                CalibrationLine.active_flag == 1,
-                CalibrationLine.runtime_eligible == 1,
-                self._scoped_clause(CalibrationLine, scene),
-            )
-            .order_by(CalibrationLine.created_at.asc(), CalibrationLine.row_id.asc())
-        ).scalars().all()
-        scoped_rows = [row for row in rows if row.scope in {"chapter", "scene"}]
-        return scoped_rows or rows
-
-    def resolve_open_foreshadow_trackers(self, session: Session, scene: SceneCard) -> list[ForeshadowTracker]:
-        return session.execute(
-            select(ForeshadowTracker)
-            .where(
-                ForeshadowTracker.active_flag == 1,
-                ForeshadowTracker.tracker_status == "open",
-                ForeshadowTracker.chapter_id == scene.chapter_id,
-                or_(ForeshadowTracker.scene_id.is_(None), ForeshadowTracker.scene_id == scene.scene_id),
-            )
-            .order_by(ForeshadowTracker.created_at.asc(), ForeshadowTracker.row_id.asc())
-        ).scalars().all()
 
     def resolve_scene_summary(self, session: Session, scene: SceneCard) -> SceneMemory | None:
         return session.execute(

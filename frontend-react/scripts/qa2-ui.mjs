@@ -155,7 +155,7 @@ await shot("styleref-tide");
 // ---- 全局 console 错误汇总（巡检全部视图）----
 ctx = "console-sweep";
 consoleErrs.length = 0;
-for (const v of ["home", "flowmap", "writer", "library", "manuscripts", "longform", "index", "interop", "settings", "trash"]) {
+for (const v of ["home", "flowmap", "writer", "library", "manuscripts", "settings", "trash"]) {
   await go("work-a", v); await page.waitForTimeout(700);
 }
 const realErrs = consoleErrs.filter(e => !/favicon|404.*\.png|ResizeObserver/i.test(e.t));

@@ -17,7 +17,6 @@ IDEMPOTENCY_BOUNDARIES = {
     "optional_idempotent_response",
 }
 READ_ONLY_POST_EXEMPTIONS = {
-    ("interop.py", "preview_bundle_worksheet"),
     ("style_reference.py", "dryrun_injection_preview"),
 }
 

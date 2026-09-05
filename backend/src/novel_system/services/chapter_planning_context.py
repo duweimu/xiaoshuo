@@ -125,7 +125,7 @@ class ChapterPlanningContextBuilder:
         else:
             self._slot_degraded("narrative_state")
 
-        foreshadow = self._foreshadow_slot(first_scene)
+        foreshadow = None
         if foreshadow:
             payload["foreshadow_debts"] = foreshadow
         else:
@@ -271,17 +271,6 @@ class ChapterPlanningContextBuilder:
         except Exception:
             return None
 
-    def _foreshadow_slot(self, first_scene: SceneCard | None) -> str | None:
-        if first_scene is None:
-            return None
-        try:
-            from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService
-
-            return ForeshadowLifecycleService(self.session).format_foreshadow_directives(
-                first_scene.scene_id
-            )
-        except Exception:
-            return None
 
     def _tension_slot(self, chapters: list[ChapterGoal], index: int) -> dict[str, Any]:
         lo = max(0, index - _TENSION_WINDOW_BEFORE)

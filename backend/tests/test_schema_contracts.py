@@ -11,11 +11,9 @@ def test_schema_creates_required_tables(session) -> None:
 
     assert "chapter_goals" in table_names
     assert "scene_run_states" in table_names
-    assert "vector_alias_registry" in table_names
     assert "review_items" in table_names
     assert "idempotency_keys" in table_names
     assert "operation_logs" in table_names
-    assert "reconcile_faults" in table_names
 
 
 def test_review_items_exposes_derived_target_collection(session) -> None:

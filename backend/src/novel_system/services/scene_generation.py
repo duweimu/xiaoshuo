@@ -588,45 +588,12 @@ class SceneGenerationService:
             if scene and scene.project_id
             else None
         )
+        # Evidence-gated per-cell strategy policies were retired; ranking always
+        # uses the project/built-in dimension weights.
         quality_strategy_audit: dict[str, Any] = {
             "status": "project_or_builtin_weights",
             "matched_policy_id": None,
         }
-        if scene is not None:
-            try:
-                from novel_system.services.quality_strategy import (
-                    QualityStrategyResolver,
-                )
-
-                resolved_strategy = QualityStrategyResolver(
-                    self.session
-                ).resolve_for_scene(scene)
-                quality_strategy_audit = {
-                    "status": "resolved",
-                    "matched_policy_id": resolved_strategy.matched_policy_id,
-                    "fallback_level": getattr(
-                        resolved_strategy, "fallback_level", None
-                    ),
-                    "blockers": list(getattr(resolved_strategy, "blockers", ()) or ()),
-                }
-                if resolved_strategy.matched_policy_id is not None:
-                    _project_weights = resolved_strategy.weights
-            except DomainError as exc:
-                # Ranking is fail-soft for the single-candidate path.  The N>1
-                # authorization itself fails closed in Orchestrator.
-                quality_strategy_audit = {
-                    "status": "degraded",
-                    "matched_policy_id": None,
-                    "error_code": exc.code,
-                    "fallback": "project_or_builtin_weights",
-                }
-                _LOGGER.warning(
-                    "quality strategy ranking degraded scene_id=%s code=%s; "
-                    "using project/default weights",
-                    scene_id,
-                    exc.code,
-                    exc_info=True,
-                )
 
         try:
             task_config = self._llm_runner.task_config("style_draft")

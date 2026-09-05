@@ -50,7 +50,6 @@ def test_project_cost_summary(client, session):
     summary = data["summary"]
     assert summary["total_cost"] > 0
     assert summary["archived_scene_count"] == 1
-    assert "judge_independence" in summary
 
 
 def test_scene_drilldown(client, session):

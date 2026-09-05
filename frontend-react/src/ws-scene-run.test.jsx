@@ -586,6 +586,91 @@ describe("SceneRunJobControl", () => {
     expect(restored.error).toContain("尚未产出正文");
   });
 
+  /* 契约对位：GET /scenes/{id}/workbench 以 hard_qc_summary / soft_qc_summary 透出质检
+     （api/routes/scenes.py `_serialize_qc_summary`，rewrite_brief 为字符串列表）。
+     起草台的运行记录必须从这两个真实键名取回改写指令，否则「按硬问题重写并复检」
+     只能退到 issue_key 拼接，作者看不到质检给出的具体改法。 */
+  const HARD_BLOCKED_WORKBENCH = {
+    neutral_draft: { content: "潮水退去。\n她留下了证词。" },
+    scene_run_state: { scene_status: "hard_qc_rewrite_required" },
+    author_state: {
+      author_state: "hard_blocked",
+      blocking_findings: [{ issue_key: "missing_required_text", quality_level: "Q1", verified_by: "scene_card_required_text" }],
+      quality_warnings: [],
+      recommended_actions: ["review_pipeline_gate"],
+      can_archive: false,
+    },
+    hard_qc_summary: {
+      qc_report_id: "qc_hard_s1_001",
+      qc_type: "hard_qc",
+      pass_flag: false,
+      resolution_code: "rewrite_partial_requested",
+      issue_keys: ["missing_required_text"],
+      next_action: "rewrite_partial",
+      rewrite_brief: ["补齐推门动作", "明确主动销毁通行证"],
+      created_at: "2026-09-03T10:00:00",
+    },
+    soft_qc_summary: null,
+  };
+
+  it("scnRun：workbench 的 hard_qc_summary.rewrite_brief 落到作者可见的运行记录", async () => {
+    const { mod, client } = await loadSceneRun();
+    client.apiPost.mockImplementation((url) => {
+      if (/\/api\/v1\/scenes\/s1\/run\/jobs$/.test(url)) {
+        return Promise.resolve({ job_id: "job-hard-brief", scene_id: "s1", status: "running" });
+      }
+      return Promise.resolve({});
+    });
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url) => {
+      if (url === "/api/v1/run-jobs/job-hard-brief") {
+        // run-jobs 视图的 latest_qc 不带 rewrite_brief（scene_run_jobs._latest_qc_summary），
+        // 改写指令只存在于 workbench 摘要里——这里故意给出无指令的 latest_qc 以证明取数来源。
+        return Promise.resolve({
+          job_id: "job-hard-brief",
+          scene_id: "s1",
+          status: "blocked",
+          current_step: "hard_qc",
+          latest_qc: { qc_type: "hard_qc", pass_flag: false, issue_keys: ["missing_required_text"] },
+        });
+      }
+      if (url === "/api/v1/scenes/s1/workbench") return Promise.resolve(HARD_BLOCKED_WORKBENCH);
+      return baseGet(url);
+    });
+
+    vi.useFakeTimers();
+    let result;
+    try {
+      const pending = mod.scnRun({ sid: "ch01s1", kind: "主动场景" }, "", "");
+      await vi.runAllTimersAsync();
+      result = await pending;
+    } finally {
+      vi.useRealTimers();
+    }
+
+    expect(result.state).toBe("ready");
+    expect(result.gate.authorState).toBe("hard_blocked");
+    expect(result.gate.canArchive).toBe(false);
+    expect(result.rewriteBrief).toBe("补齐推门动作；明确主动销毁通行证");
+  });
+
+  it("scnHydrateFromBackend：换浏览器恢复时同样取回 hard_qc_summary 的改写指令", async () => {
+    const { mod, client } = await loadSceneRun();
+    const baseGet = client.apiGet.getMockImplementation();
+    client.apiGet.mockImplementation((url, options) => {
+      if (url === "/api/v1/scenes/s1/workbench") return Promise.resolve(HARD_BLOCKED_WORKBENCH);
+      return baseGet(url, options);
+    });
+
+    const restored = await mod.scnHydrateFromBackend("ch01s1", {});
+
+    expect(restored).toBeTruthy();
+    expect(restored.state).toBe("ready");
+    expect(restored.draft.length).toBeGreaterThan(0);
+    expect(restored.gate.canArchive).toBe(false);
+    expect(restored.rewriteBrief).toBe("补齐推门动作；明确主动销毁通行证");
+  });
+
   it("topups only the exhausted lifecycle dimension through the audited author route", async () => {
     const { mod, client } = await loadSceneRun();
     client.apiPost.mockResolvedValue({ scene_token_budget: 41040 });
@@ -1969,6 +2054,43 @@ describe("作者状态门（Wave 2：无法继续 vs 有稿建议修改）", () 
       hard_qc: { rewrite_brief: ["补齐推门动作", "明确主动销毁通行证"] },
       author_state: HARD_BLOCKED_PROJECTION,
     })).toBe("补齐推门动作；明确主动销毁通行证");
+  });
+
+  it("scnRewriteBriefFrom：读后端真实键名 hard_qc_summary / soft_qc_summary，硬优先于软", async () => {
+    const { mod } = await loadSceneRun();
+    // 服务端形状（api/routes/scenes.py `_serialize_qc_summary`）
+    expect(mod.scnRewriteBriefFrom({
+      hard_qc_summary: { qc_type: "hard_qc", pass_flag: false, rewrite_brief: ["补齐推门动作", "明确主动销毁通行证"] },
+      soft_qc_summary: { qc_type: "soft_qc", pass_flag: false, rewrite_brief: ["收紧结尾三句"] },
+      author_state: HARD_BLOCKED_PROJECTION,
+    })).toBe("补齐推门动作；明确主动销毁通行证");
+    // 硬质检已过（rewrite_brief 为空列表）→ 退到软质检的修补建议，而不是 issue_key 拼接
+    expect(mod.scnRewriteBriefFrom({
+      hard_qc_summary: { qc_type: "hard_qc", pass_flag: true, rewrite_brief: [] },
+      soft_qc_summary: { qc_type: "soft_qc", pass_flag: false, rewrite_brief: ["收紧结尾三句"] },
+      author_state: HARD_BLOCKED_PROJECTION,
+    })).toBe("收紧结尾三句");
+    // 两份摘要都为 null（尚未跑质检）→ 退到 author_state 阻断项的可读原因
+    expect(mod.scnRewriteBriefFrom({
+      hard_qc_summary: null,
+      soft_qc_summary: null,
+      author_state: HARD_BLOCKED_PROJECTION,
+    })).toBe("missing_required_text");
+  });
+
+  it("scnRewriteBriefFrom：旧键名 hard_qc / soft_qc / latest_qc 仍可兜底，且服务端键名优先", async () => {
+    const { mod } = await loadSceneRun();
+    expect(mod.scnRewriteBriefFrom({
+      hard_qc_summary: { rewrite_brief: ["服务端硬指令"] },
+      hard_qc: { rewrite_brief: ["旧键硬指令"] },
+    })).toBe("服务端硬指令");
+    expect(mod.scnRewriteBriefFrom({ soft_qc: { rewrite_brief: ["旧键软指令"] } })).toBe("旧键软指令");
+    expect(mod.scnRewriteBriefFrom({ latest_qc: { rewrite_brief: ["旧键最近指令"] } })).toBe("旧键最近指令");
+    // qc-reports 明细路径的原始 rewrite_brief_json 条目（instruction / carry_note_text）也不能变成 [object Object]
+    expect(mod.scnRewriteBriefFrom({
+      hard_qc_summary: { rewrite_brief: [{ instruction: "补齐推门动作" }, { carry_note_text: "通行证已销毁" }, "", null] },
+    })).toBe("补齐推门动作；通行证已销毁");
+    expect(mod.scnRewriteBriefFrom(null)).toBe("");
   });
 
   it("scnGateFrom：quality_warning 投影 → 可归档 + 警告随行；无投影 → null", async () => {

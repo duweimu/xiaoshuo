@@ -31,7 +31,7 @@ from novel_system.db.models import (
     SceneCard,
     SceneRunState,
 )
-from novel_system.services import model_independence, pricing
+from novel_system.services import pricing
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -364,10 +364,6 @@ def scene_cost(session: Session, scene_id: str) -> dict[str, Any]:
     state = session.get(SceneRunState, scene_id)
     agg = _aggregate_calls(session, calls)
     budget = _budget_view(state)
-    # 评审独立性：observed（本场实际）优先，无评审调用时回退 config 口径
-    judge = model_independence.observed_correlated_judge(session, scene_id)
-    if judge is None:
-        judge = model_independence.judge_independence(session)
     result = {
         "scene_id": scene_id,
         "total_cost": agg["total_cost"],
@@ -383,7 +379,6 @@ def scene_cost(session: Session, scene_id: str) -> dict[str, Any]:
         "calibers": agg["calibers"],
         "attempt_observability": agg["attempt_observability"],
         "extra_cost": _extra_cost(session, scene_id, calls, agg["total_cost"], state),
-        "judge_independence": judge,
     }
     return result
 
@@ -500,7 +495,6 @@ def _project_summary(
         "cost_per_archived_chapter": (
             round(agg["total_cost"] / len(archived_chapters), 6) if archived_chapters else None
         ),
-        "judge_independence": model_independence.judge_independence(session),
     }
 
 

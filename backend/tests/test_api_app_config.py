@@ -10,7 +10,6 @@ from novel_system.db.session import engine
 from novel_system.settings import (
     BACKEND_ROOT,
     DEFAULT_DATABASE_PATH,
-    DEFAULT_LITERARY_EVAL_REPORT_PATH,
     DEFAULT_VECTOR_STORE_DIR,
     get_settings,
 )
@@ -56,30 +55,21 @@ def test_default_runtime_paths_do_not_depend_on_process_working_directory(
 ) -> None:
     monkeypatch.delenv("NOVEL_SYSTEM_DATABASE_URL", raising=False)
     monkeypatch.delenv("NOVEL_SYSTEM_CHROMA_DIR", raising=False)
-    monkeypatch.delenv("NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH", raising=False)
     monkeypatch.chdir(tmp_path)
 
     settings = get_settings(include_runtime_config=False)
 
     assert settings.database_url == f"sqlite:///{DEFAULT_DATABASE_PATH.as_posix()}"
     assert settings.vector_store_dir == DEFAULT_VECTOR_STORE_DIR
-    assert settings.literary_eval_report_path == DEFAULT_LITERARY_EVAL_REPORT_PATH
     assert settings.vector_store_dir.is_relative_to(BACKEND_ROOT)
 
 
 def test_relative_runtime_paths_are_resolved_from_backend_root(monkeypatch) -> None:
     monkeypatch.setenv("NOVEL_SYSTEM_CHROMA_DIR", "runtime/vector")
-    monkeypatch.setenv(
-        "NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH",
-        "runtime/eval/latest.json",
-    )
 
     settings = get_settings(include_runtime_config=False)
 
     assert settings.vector_store_dir == BACKEND_ROOT / "runtime" / "vector"
-    assert settings.literary_eval_report_path == (
-        BACKEND_ROOT / "runtime" / "eval" / "latest.json"
-    )
 
 
 def test_cors_defaults_to_local_dev_origins_without_wildcard_credentials(monkeypatch) -> None:

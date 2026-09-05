@@ -63,3 +63,15 @@ def _looks_like_latin1_utf8_mojibake(text: str) -> bool:
     ascii_letters = sum(1 for char in text if "A" <= char <= "z")
     cjk = sum(1 for char in text if "\u4e00" <= char <= "\u9fff")
     return cjk == 0 and marker_count >= max(3, ascii_letters // 8)
+
+
+BACKFILL_MARKER_RE = re.compile(
+    r'{{backfill\s+id=(?P<marker_id>[^\s}]+)\s+text="(?P<marker_text>[^"]+)"\s*}}'
+)
+
+
+def clean_backfill_markers(text: str | None) -> str | None:
+    """Strip legacy ``{{backfill ...}}`` placeholders down to their visible text."""
+    if text is None:
+        return None
+    return BACKFILL_MARKER_RE.sub(lambda match: match.group("marker_text"), text)

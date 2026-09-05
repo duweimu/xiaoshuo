@@ -104,5 +104,4 @@ def test_hashed_chroma_requirements_export_is_committed() -> None:
 def test_runtime_timezone_and_node_lock_ownership_are_explicit() -> None:
     assert str(ZoneInfo("Asia/Shanghai")) == "Asia/Shanghai"
     assert not (REPOSITORY_ROOT / "package-lock.json").exists()
-    assert (REPOSITORY_ROOT / "frontend" / "package-lock.json").is_file()
     assert (REPOSITORY_ROOT / "frontend-react" / "package-lock.json").is_file()

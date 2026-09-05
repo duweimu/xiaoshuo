@@ -39,7 +39,6 @@ _NON_PROMPTBUILDER_TEMPLATE_NAMES = {
     "extraction",
     # 当前无 PromptBuilder 调用方（保留 / 旧元数据）。
     "snowflake_step_generate",
-    "literary_eval_live",
 }
 
 

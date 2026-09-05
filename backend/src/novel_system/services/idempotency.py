@@ -13,7 +13,7 @@ from sqlalchemy import update
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from novel_system.db.models import IdempotencyKey, OperationLog, ReviewItem, SceneRunState, VerifyJob
+from novel_system.db.models import IdempotencyKey, OperationLog, SceneRunState
 from novel_system.services.database_errors import is_database_busy_error
 from novel_system.services.errors import DomainError
 from novel_system.services.human_review_support import structured_target
@@ -556,64 +556,6 @@ def _mark_owned_idempotency_failed(
 def _prepare_operator_action_context(session: Session, *, path_template: str, payload: Any) -> dict[str, Any] | None:
     payload = payload or {}
 
-    if path_template == "/api/v1/human-review-events/{event_id}/actions":
-        return None
-
-    if path_template == "/api/v1/review-items/{review_id}/approve":
-        review_id = payload.get("review_id")
-        if not isinstance(review_id, str) or not review_id:
-            return None
-        review = session.get(ReviewItem, review_id)
-        return {
-            "object_type": "review_item",
-            "object_ref": review_id,
-            "action": "approve_review",
-            "status_before": review.status if review else None,
-            "target_refs": [_target("review_item", review_id)],
-        }
-
-    if path_template == "/api/v1/review-items/{review_id}/release":
-        review_id = payload.get("review_id")
-        if not isinstance(review_id, str) or not review_id:
-            return None
-        review = session.get(ReviewItem, review_id)
-        return {
-            "object_type": "review_item",
-            "object_ref": review_id,
-            "action": "release_review",
-            "status_before": review.status if review else None,
-            "target_refs": [_target("review_item", review_id)],
-        }
-
-    if path_template == "/api/v1/review-items/{review_id}/reject":
-        review_id = payload.get("review_id")
-        if not isinstance(review_id, str) or not review_id:
-            return None
-        review = session.get(ReviewItem, review_id)
-        return {
-            "object_type": "review_item",
-            "object_ref": review_id,
-            "action": "reject_review",
-            "status_before": review.status if review else None,
-            "target_refs": [_target("review_item", review_id)],
-        }
-
-    if path_template == "/api/v1/index/verify/{job_id}/retry":
-        job_id = payload.get("job_id")
-        if not isinstance(job_id, str) or not job_id:
-            return None
-        job = session.get(VerifyJob, job_id)
-        targets = [_target("verify_job", job_id)]
-        if job and job.review_id:
-            targets.append(_target("review_item", job.review_id))
-        return {
-            "object_type": "verify_job",
-            "object_ref": job_id,
-            "action": "retry_verify",
-            "status_before": job.status if job else None,
-            "target_refs": targets,
-        }
-
     if path_template == "/api/v1/scenes/{scene_id}/run/full":
         scene_id = payload.get("scene_id")
         if not isinstance(scene_id, str) or not scene_id:
@@ -625,24 +567,6 @@ def _prepare_operator_action_context(session: Session, *, path_template: str, pa
             "action": "run_scene",
             "status_before": state.scene_status if state else None,
             "target_refs": [_target("scene_card", scene_id)],
-        }
-
-    if path_template == "/api/v1/runtime/recovery/sweep":
-        return {
-            "object_type": "runtime_operation",
-            "object_ref": "recovery_sweep",
-            "action": "run_recovery_sweep",
-            "status_before": None,
-            "target_refs": [],
-        }
-
-    if path_template == "/api/v1/runtime/promotions/run-due":
-        return {
-            "object_type": "runtime_operation",
-            "object_ref": "run_due_promotions",
-            "action": "run_due_promotions",
-            "status_before": None,
-            "target_refs": [],
         }
 
     return None
@@ -738,61 +662,6 @@ def _resolve_operator_action_outcome(
     object_ref: str,
     result: dict[str, Any],
 ) -> tuple[str | None, str, dict[str, Any]]:
-    if action == "approve_review":
-        job_ids = result.get("job_ids") or []
-        targets = []
-        for job_id in job_ids:
-            if not isinstance(job_id, str):
-                continue
-            if job_id.startswith("reindex_"):
-                targets.append(_target("reindex_job", job_id))
-            elif job_id.startswith("verify_"):
-                targets.append(_target("verify_job", job_id))
-        return (
-            result.get("materialize_status"),
-            "review approved and candidate materialized",
-            {
-                "review_id": object_ref,
-                "approved_item_row_id": result.get("approved_item_row_id"),
-                "materialize_status": result.get("materialize_status"),
-                "target_refs": targets,
-            },
-        )
-
-    if action == "release_review":
-        status_after = "released" if result.get("released") else None
-        return (
-            status_after,
-            "review released and active alias promoted",
-            {
-                "review_id": object_ref,
-                "released": result.get("released"),
-            },
-        )
-
-    if action == "reject_review":
-        return (
-            result.get("status"),
-            "review rejected by operator",
-            {
-                "review_id": object_ref,
-                "reason": result.get("reason"),
-            },
-        )
-
-    if action == "retry_verify":
-        job = session.get(VerifyJob, object_ref)
-        return (
-            result.get("status") or (job.status if job else None),
-            "verify succeeded for candidate alias",
-            {
-                "job_id": object_ref,
-                "job_type": "verify",
-                "review_id": job.review_id if job else None,
-                "alias_scope": result.get("alias_scope"),
-            },
-        )
-
     if action == "run_scene":
         return (
             result.get("scene_status"),
@@ -802,45 +671,6 @@ def _resolve_operator_action_outcome(
                 "current_bundle_id": result.get("current_bundle_id"),
                 "current_bundle_hash": result.get("current_bundle_hash"),
                 "current_final_scene_row_id": result.get("current_final_scene_row_id"),
-            },
-        )
-
-    if action == "run_recovery_sweep":
-        return (
-            "completed",
-            "recovery sweep completed",
-            {
-                "reclaimed_jobs": result.get("reclaimed_jobs"),
-                "reclaimed_job_summaries": result.get("reclaimed_job_summaries"),
-                "failed_jobs": result.get("failed_jobs"),
-                "failed_job_summaries": result.get("failed_job_summaries"),
-                "reclaimed_idempotency_keys": result.get("reclaimed_idempotency_keys"),
-                "failed_idempotency_keys": result.get("failed_idempotency_keys"),
-                "reclaimed_idempotency_key_summaries": result.get("reclaimed_idempotency_key_summaries"),
-                "created_human_review_events": result.get("created_human_review_events"),
-                "created_human_review_event_ids": result.get("created_human_review_event_ids"),
-                "created_human_review_event_targets": result.get("created_human_review_event_targets"),
-                "target_refs": _dedupe_targets(
-                    [
-                        *_result_targets(result.get("reclaimed_job_summaries")),
-                        *_result_targets(result.get("failed_job_summaries")),
-                        *_result_targets(result.get("created_human_review_event_targets")),
-                    ]
-                ),
-            },
-        )
-
-    if action == "run_due_promotions":
-        return (
-            "completed",
-            "due promotions completed",
-            {
-                "promoted": result.get("promoted"),
-                "promoted_review_ids": result.get("promoted_review_ids"),
-                "promoted_review_targets": result.get("promoted_review_targets"),
-                "promoted_row_ids": result.get("promoted_row_ids"),
-                "promoted_alias_scopes": result.get("promoted_alias_scopes"),
-                "target_refs": _dedupe_targets(_result_targets(result.get("promoted_review_targets"))),
             },
         )
 

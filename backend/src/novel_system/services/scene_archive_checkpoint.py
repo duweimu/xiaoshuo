@@ -36,7 +36,6 @@ from novel_system.db.models import (
     ChapterRollingNote,
     FinalScene,
     LlmCall,
-    LongformStructureGuidance,
     NarrativeEvent,
     SceneCard,
     SceneMemory,
@@ -2041,8 +2040,6 @@ class SceneArchiveCheckpoint:
             outcomes={
                 "not_applicable",
                 "no_op",
-                "guidance_created",
-                "already_present",
                 "degraded",
             },
         )
@@ -2071,79 +2068,6 @@ class SceneArchiveCheckpoint:
                     status_code=409,
                 )
             return product
-        if product.get("outcome") in {"guidance_created", "already_present"}:
-            row = self.session.get(
-                LongformStructureGuidance, product.get("guidance_id")
-            )
-            if row is None:
-                self._orch._raise_checkpoint_output_missing(row_id=product.get("guidance_id"))
-            evidence = dict(row.evidence_json or {})
-            if (
-                row.scope_type != product.get("scope_type")
-                or row.scope_ref_id != product.get("scope_ref_id")
-                or self._orch._text_hash(row.content) != product.get("content_hash")
-                or self._orch._json_hash(row.recommendation_json or {})
-                != product.get("recommendation_hash")
-                or row.source_review_id != product.get("source_review_id")
-                or evidence.get("creation_path") != "orchestrator_style_drift"
-                or evidence.get("identity_hash") != product.get("identity_hash")
-                or evidence.get("source_chapter_id") != scene.chapter_id
-                or sorted(evidence.get("supersedes_guidance_ids") or [])
-                != sorted(product.get("supersedes_guidance_ids") or [])
-            ):
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style drift guidance changed",
-                    status_code=409,
-                )
-            current = row
-            seen: set[str] = set()
-            while current.status == "superseded":
-                if current.guidance_id in seen:
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "style drift successor chain has a cycle",
-                        status_code=409,
-                    )
-                seen.add(current.guidance_id)
-                current_evidence = dict(current.evidence_json or {})
-                successor_id = current_evidence.get("superseded_by_guidance_id")
-                if (
-                    not isinstance(successor_id, str)
-                    or not successor_id
-                    or current_evidence.get("superseded_by_creation_path")
-                    != "orchestrator_style_drift"
-                ):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "superseded style drift guidance has no successor",
-                        status_code=409,
-                    )
-                successor = self.session.get(LongformStructureGuidance, successor_id)
-                successor_evidence = (
-                    dict(successor.evidence_json or {}) if successor is not None else {}
-                )
-                if (
-                    successor is None
-                    or successor.scope_type != row.scope_type
-                    or successor.scope_ref_id != row.scope_ref_id
-                    or successor_evidence.get("creation_path")
-                    != "orchestrator_style_drift"
-                    or current.guidance_id
-                    not in (successor_evidence.get("supersedes_guidance_ids") or [])
-                ):
-                    raise DomainError(
-                        "RUN_CHECKPOINT_CORRUPT",
-                        "style drift successor chain is invalid",
-                        status_code=409,
-                    )
-                current = successor
-            if current.status != "approved" or current.runtime_eligible != 1:
-                raise DomainError(
-                    "RUN_CHECKPOINT_CORRUPT",
-                    "style drift successor chain has no active guidance",
-                    status_code=409,
-                )
         if product.get("outcome") == "degraded" and not isinstance(
             product.get("error_code"), str
         ):

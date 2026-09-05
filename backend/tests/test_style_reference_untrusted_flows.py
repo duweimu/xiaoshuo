@@ -7,7 +7,6 @@ from types import SimpleNamespace
 
 import pytest
 
-from novel_system.services import library_derive
 from novel_system.services.style_reference import _llm_helper
 from novel_system.services.style_reference.extractors import LanguageExtractor
 from novel_system.services.style_reference.preview import PREVIEW_NODE_ID, PreviewService
@@ -39,7 +38,6 @@ FLOW_NODES = (
     PREVIEW_NODE_ID,
     semantic.SEMANTIC_NODE_ID,
     forbidden_semantic.FORBIDDEN_SEMANTIC_NODE_ID,
-    library_derive.DERIVE_NODE_ID,
 )
 
 
@@ -272,17 +270,3 @@ def test_forbidden_semantic_request_is_bounded(
     )
 
 
-def test_library_derive_request_is_bounded(monkeypatch, _fake_nodes, session) -> None:
-    client = _CaptureClient()
-    service = library_derive.LibraryDeriveService(session, llm_client=client)
-    monkeypatch.setattr(service, "_known_names", lambda project_id: {MALICIOUS_TEXT})
-
-    service._extract("project-boundary", "chapter-boundary", FORGED_BOUNDARIES)
-
-    assert len(client.requests) == 1
-    _assert_request_is_bounded(
-        client.requests[0],
-        node_id=library_derive.DERIVE_NODE_ID,
-        template=_fake_nodes[library_derive.DERIVE_NODE_ID],
-    )
-    _assert_preamble_is_task_generic(client.requests[0])

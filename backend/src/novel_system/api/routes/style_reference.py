@@ -651,6 +651,25 @@ def cancel_run(
 ):
     def _do() -> dict[str, Any]:
         repo = StyleReferenceRepository(session)
+        run = repo.get_run(run_id)
+        if run is None:
+            raise DomainError(
+                "STYLE_REFERENCE_RUN_NOT_FOUND",
+                f"run {run_id!r} not found",
+                status_code=404,
+            )
+        # 取消只对 pending/running 有意义。已取消的重复取消是幂等 no-op(不重写 finished_at);
+        # done/failed 是终态:改写成 cancelled 会让已合成的 profile 挂在「被取消」的 run 上,
+        # 也抹掉 failed 的 error_code/retryable——按场景 run-job 的 RUN_JOB_CANCEL_CONFLICT 契约回 409。
+        if run.status == RunStatus.CANCELLED.value:
+            return {"run_id": run_id, "status": run.status}
+        if run.status not in {RunStatus.PENDING.value, RunStatus.RUNNING.value}:
+            raise DomainError(
+                "STYLE_REFERENCE_RUN_CANCEL_CONFLICT",
+                f"run {run_id!r} already finished with status {run.status!r} and cannot be cancelled",
+                status_code=409,
+                details={"run_id": run_id, "status": run.status},
+            )
         updated = repo.update_run(
             run_id,
             status=RunStatus.CANCELLED.value,
@@ -659,11 +678,12 @@ def cancel_run(
             finished_at=utcnow(),
             retryable=False,
         )
-        if updated is None:
+        if updated is None:  # get_run 刚命中同一行；只有并发删除才会走到这里
             raise DomainError(
                 "STYLE_REFERENCE_RUN_NOT_FOUND",
-                f"run {run_id!r} not found",
+                f"run {run_id!r} disappeared while being cancelled",
                 status_code=404,
+                details={"run_id": run_id},
             )
         return {"run_id": run_id, "status": updated.status}
 

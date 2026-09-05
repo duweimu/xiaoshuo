@@ -6,7 +6,7 @@ import unicodedata
 from collections.abc import Iterable
 from typing import Any
 
-from novel_system.services.versioning.shared import now_iso
+from novel_system.db.models import utcnow as now_iso
 
 
 # BUG-002 hardening: protected-source-term matching must survive trivial

@@ -13,10 +13,6 @@ from novel_system.runtime_defaults import DEFAULT_LLM_TIMEOUT_SECONDS
 BACKEND_ROOT = Path(__file__).resolve().parents[2]
 REPOSITORY_ROOT = BACKEND_ROOT.parent
 DEFAULT_VECTOR_STORE_DIR = BACKEND_ROOT / ".vector_store"
-DEFAULT_LITERARY_EVAL_REPORT_PATH = (
-    BACKEND_ROOT / ".codex-run" / "literary_eval_latest.json"
-)
-DEFAULT_LITERARY_EVAL_SUITE_ROOT = REPOSITORY_ROOT / "config" / "evals"
 
 
 @dataclass(slots=True)
@@ -101,12 +97,6 @@ class Settings:
     # Server-side path imports are disabled unless one or more roots are listed.
     # Browser uploads remain available and are the preferred import path.
     style_reference_import_roots: tuple[Path, ...] = ()
-    # The bundled eval suite is always available. Additional server-side suite
-    # paths must live under one of these explicitly configured roots.
-    literary_eval_suite_roots: tuple[Path, ...] = (
-        DEFAULT_LITERARY_EVAL_SUITE_ROOT,
-    )
-    literary_eval_report_path: Path = DEFAULT_LITERARY_EVAL_REPORT_PATH
     # ``review`` prevents unattended archive for high-risk heuristic matches;
     # ``audit`` records the same findings without blocking publication.
     content_safety_mode: str = "review"
@@ -252,16 +242,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
     style_reference_import_roots = _get_path_list_env(
         "NOVEL_SYSTEM_STYLE_REFERENCE_IMPORT_ROOTS"
     )
-    literary_eval_suite_roots = _get_path_list_env(
-        "NOVEL_SYSTEM_LITERARY_EVAL_SUITE_ROOTS",
-        (DEFAULT_LITERARY_EVAL_SUITE_ROOT,),
-    )
-    literary_eval_report_path = _resolve_runtime_path(
-        os.environ.get(
-            "NOVEL_SYSTEM_LITERARY_EVAL_REPORT_PATH",
-            DEFAULT_LITERARY_EVAL_REPORT_PATH,
-        )
-    )
     content_safety_mode = os.environ.get("NOVEL_SYSTEM_CONTENT_SAFETY_MODE", "review").strip().lower()
     if content_safety_mode not in {"review", "audit"}:
         raise ValueError("NOVEL_SYSTEM_CONTENT_SAFETY_MODE must be review or audit")
@@ -299,8 +279,6 @@ def get_settings(*, include_runtime_config: bool = True) -> Settings:
         remote_access_token=remote_access_token,
         max_request_body_bytes=max_request_body_bytes,
         style_reference_import_roots=style_reference_import_roots,
-        literary_eval_suite_roots=literary_eval_suite_roots,
-        literary_eval_report_path=literary_eval_report_path,
         content_safety_mode=content_safety_mode,
         fixture_import_enabled=_get_strict_bool_env("NOVEL_SYSTEM_ENABLE_FIXTURE_IMPORT", False),
     )

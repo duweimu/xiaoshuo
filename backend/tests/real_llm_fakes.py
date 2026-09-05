@@ -20,7 +20,6 @@ _SCENE_PIPELINE_RUNNER_MODULES = (
     "novel_system.services.scene_generation",
     "novel_system.services.qc_engine",
     "novel_system.services.near_final",
-    "novel_system.services.scene_quality",
 )
 
 

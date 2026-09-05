@@ -325,7 +325,6 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
         chapter_job_columns = _pragma_columns_by_name(connection, "chapter_run_jobs")
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
-        work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
         story_project_columns = _pragma_columns_by_name(connection, "story_projects")
         outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
         snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
@@ -341,7 +340,6 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert "qc_reports" in table_names
     assert "chapter_run_jobs" in table_names
     assert "author_draft_proposals" in table_names
-    assert "work_profiles" in table_names
     assert "story_projects" in table_names
     assert "outline_plans" in table_names
     assert "snowflake_artifacts" in table_names
@@ -367,7 +365,6 @@ def test_generation_persistence_alembic_schema_contract(tmp_path: Path) -> None:
     assert {"job_id", "chapter_id", "status", "job_type"} <= chapter_job_columns.keys()
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
-    assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
     assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
     assert "reference_profile_ids_json" not in story_project_columns
     assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
@@ -512,11 +509,9 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
         job_columns = _pragma_columns_by_name(connection, "chapter_run_jobs")
         config_columns = _pragma_columns_by_name(connection, "system_config_snapshots")
         secret_columns = _pragma_columns_by_name(connection, "system_secrets")
-        author_structure_columns = _pragma_columns_by_name(connection, "author_structure_candidates")
         planning_columns = _pragma_columns_by_name(connection, "generation_planning_artifacts")
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
-        work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
         story_project_columns = _pragma_columns_by_name(connection, "story_projects")
         outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
         snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
@@ -552,18 +547,13 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert "author_drafts" in table_names
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
-    assert "work_profiles" in table_names
     assert "story_projects" in table_names
     assert "outline_plans" in table_names
     assert "snowflake_artifacts" in table_names
     assert "story_characters" in table_names
     assert "snowflake_assistant_turns" in table_names
     assert "scene_execution_contracts" in table_names
-    assert "project_backtrack_items" in table_names
-    assert "author_structure_candidates" in table_names
     assert "generation_planning_artifacts" in table_names
-    assert "longform_diagnostic_cards" in table_names
-    assert "longform_structure_guidance" in table_names
     assert "system_config_snapshots" in table_names
     assert "system_secrets" in table_names
     assert "generation_llm_call_id" in draft_columns
@@ -575,15 +565,6 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     assert {"snapshot_id", "category", "version", "yaml_raw", "active_flag"} <= config_columns.keys()
     assert {"secret_id", "encrypted_value", "value_hint", "secret_type", "metadata_json", "expires_at"} <= secret_columns.keys()
     assert {
-        "candidate_id",
-        "object_type",
-        "object_id",
-        "source_draft_id",
-        "candidate_brief_json",
-        "status",
-        "author_decision",
-    } <= author_structure_columns.keys()
-    assert {
         "row_id",
         "artifact_type",
         "object_type",
@@ -593,7 +574,6 @@ def test_generation_persistence_upgrade_keeps_historical_rows_readable(tmp_path:
     } <= planning_columns.keys()
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
-    assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
     assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
     assert "reference_profile_ids_json" not in story_project_columns
     assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()
@@ -672,11 +652,9 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
         ).fetchone()
         config_columns = _pragma_columns_by_name(connection, "system_config_snapshots")
         secret_columns = _pragma_columns_by_name(connection, "system_secrets")
-        author_structure_columns = _pragma_columns_by_name(connection, "author_structure_candidates")
         planning_columns = _pragma_columns_by_name(connection, "generation_planning_artifacts")
         patch_columns = _pragma_columns_by_name(connection, "passage_patch_candidates")
         proposal_columns = _pragma_columns_by_name(connection, "author_draft_proposals")
-        work_profile_columns = _pragma_columns_by_name(connection, "work_profiles")
         story_project_columns = _pragma_columns_by_name(connection, "story_projects")
         outline_plan_columns = _pragma_columns_by_name(connection, "outline_plans")
         snowflake_columns = _pragma_columns_by_name(connection, "snowflake_artifacts")
@@ -713,30 +691,16 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     assert "author_draft_events" in table_names
     assert "author_draft_proposals" in table_names
     assert "scene_execution_contracts" in table_names
-    assert "project_backtrack_items" in table_names
-    assert "work_profiles" in table_names
     assert "story_projects" in table_names
     assert "outline_plans" in table_names
     assert "snowflake_artifacts" in table_names
     assert "story_characters" in table_names
     assert "snowflake_assistant_turns" in table_names
-    assert "author_structure_candidates" in table_names
     assert "generation_planning_artifacts" in table_names
-    assert "longform_diagnostic_cards" in table_names
-    assert "longform_structure_guidance" in table_names
     assert "system_config_snapshots" in table_names
     assert "system_secrets" in table_names
     assert {"snapshot_id", "category", "version", "yaml_raw", "active_flag"} <= config_columns.keys()
     assert {"secret_id", "encrypted_value", "value_hint", "secret_type", "metadata_json", "expires_at"} <= secret_columns.keys()
-    assert {
-        "candidate_id",
-        "object_type",
-        "object_id",
-        "source_draft_id",
-        "candidate_brief_json",
-        "status",
-        "author_decision",
-    } <= author_structure_columns.keys()
     assert {
         "row_id",
         "artifact_type",
@@ -747,7 +711,6 @@ def test_generation_persistence_upgrade_is_idempotent_when_0006_already_material
     } <= planning_columns.keys()
     assert EXPECTED_PATCH_CANDIDATE_METADATA_COLUMNS <= patch_columns.keys()
     assert EXPECTED_AUTHOR_DRAFT_PROPOSAL_COLUMNS <= proposal_columns.keys()
-    assert EXPECTED_WORK_PROFILE_COLUMNS <= work_profile_columns.keys()
     assert EXPECTED_STORY_PROJECT_COLUMNS <= story_project_columns.keys()
     assert "reference_profile_ids_json" not in story_project_columns
     assert EXPECTED_OUTLINE_PLAN_COLUMNS <= outline_plan_columns.keys()

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 
-def test_writer_brief_v2_round_trips_new_fields_and_keeps_legacy_fields(client) -> None:
+def test_writer_brief_v2_round_trips_new_fields_and_keeps_legacy_fields(client, session) -> None:
     chapter_payload = {
         "chapter_id": "WBV2",
         "planned_scene_count": 1,
@@ -34,9 +34,15 @@ def test_writer_brief_v2_round_trips_new_fields_and_keeps_legacy_fields(client) 
     }
     assert client.post("/api/v1/scenes", json=scene_payload, headers={"X-Idempotency-Key": "wbv2-sc"}).status_code == 200
 
-    workspace = client.get("/api/v1/chapters/WBV2/author-workspace").json()["data"]
-    chapter_brief = workspace["chapter"]["writer_brief_json"]
-    scene_brief = workspace["scenes"][0]["writer_brief_json"]
+    from novel_system.db.models import ChapterGoal, SceneCard
+    from novel_system.services.writer_briefs import (
+        normalize_chapter_writer_brief,
+        normalize_scene_writer_brief,
+    )
+
+    session.expire_all()
+    chapter_brief = normalize_chapter_writer_brief(session.get(ChapterGoal, "WBV2").writer_brief_json)
+    scene_brief = normalize_scene_writer_brief(session.get(SceneCard, "WBV2_SC01").writer_brief_json)
 
     assert chapter_brief["schema_version"] == "writer_brief_v2"
     assert chapter_brief["core_promise"] == "legacy promise stays readable"

@@ -14,11 +14,9 @@ from novel_system.db.models import (
     SceneCard,
     SceneDraft,
     SceneExecutionContract,
-    SceneQualityContract,
     SceneRunState,
     StoryProject,
 )
-from novel_system.services.project_backtracks import PROJECT_BACKTRACK_BLOCK_REASON, ProjectBacktrackService
 
 
 class SnowflakeImpactAnalyzer:
@@ -173,7 +171,6 @@ class SnowflakeImpactAnalyzer:
 class ProjectRuntimeInvalidationService:
     def __init__(self, session: Session) -> None:
         self.session = session
-        self.backtracks = ProjectBacktrackService(session)
 
     def invalidate_for_snowflake_step(
         self,
@@ -231,13 +228,6 @@ class ProjectRuntimeInvalidationService:
         ).scalars().all():
             row.status = "stale"
 
-        for row in self.session.execute(
-            select(SceneQualityContract).where(
-                SceneQualityContract.scene_id.in_(scene_ids),
-                SceneQualityContract.status == "active",
-            )
-        ).scalars().all():
-            row.status = "superseded"
 
         final_row_ids = [
             row.current_final_scene_row_id
@@ -269,51 +259,16 @@ class ProjectRuntimeInvalidationService:
                     chapter_id=chapter_id,
                     current_phase="planning",
                     mid_aggregate_enabled_effective=0,
-                    aggregate_block_reason=PROJECT_BACKTRACK_BLOCK_REASON,
+                    aggregate_block_reason="none",
                 )
                 self.session.add(state)
             state.current_phase = "planning"
-            state.aggregate_block_reason = PROJECT_BACKTRACK_BLOCK_REASON
+            state.aggregate_block_reason = "none"
 
-        # 把上面新建的 ChapterState 落库，使下游 backtracks._apply_block 的 session.get 能命中
-        # 它们（session autoflush=False，pending 新对象对 get 不可见），否则同一 chapter_id 会被
-        # _apply_block 再 add 一遍，flush 时撞 chapter_states.chapter_id UNIQUE 约束 → 批准雪花步 500。
         self.session.flush()
 
-        scope = _scope_for_step(step_key)
-        if impact.get("broad"):
-            self.backtracks.ensure_item(
-                project_id=project_id,
-                chapter_id=None,
-                scene_id=None,
-                scope=scope,
-                target_ref=f"snowflake:{step_key}",
-                problem_summary=f"雪花步骤 {step_key} 已重新确认，下游章节和场景需要复核。",
-                recommended_fix="先查看新的雪花内容，再重新生成执行契约并重跑受影响场景。",
-                reason_codes=["snowflake_reapproved", step_key],
-                created_by="snowflake_planner",
-            )
-        else:
-            for scene in scenes:
-                self.backtracks.ensure_item(
-                    project_id=project_id,
-                    chapter_id=scene.chapter_id,
-                    scene_id=scene.scene_id,
-                    scope="scene",
-                    target_ref=f"snowflake:{step_key}:{scene.scene_id}",
-                    problem_summary=f"雪花步骤 {step_key} 改动影响了场景 {scene.scene_id}。",
-                    recommended_fix="复核新的场景规划，重新生成该场执行契约，并重跑这一场。",
-                    reason_codes=["snowflake_reapproved", step_key, "scoped_scene"],
-                    created_by="snowflake_planner",
-                )
         if project.status not in {"completed"}:
             project.status = "chapter_blocked"
         return impact
 
 
-def _scope_for_step(step_key: str) -> str:
-    if step_key in {"character_sheets", "character_synopses", "character_bibles"}:
-        return "character"
-    if step_key in {"scene_list", "scene_details"}:
-        return "scene_list"
-    return "synopsis"

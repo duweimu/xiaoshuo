@@ -10,11 +10,7 @@ from sqlalchemy import delete, text
 from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
-    BannedRuleCluster,
-    CalibrationLine,
-    NarrativePattern,
     ReviewItem,
-    StyleObservation,
     StyleReferenceBannedTerm,
     StyleReferenceEvidence,
     StyleReferenceExtraction,
@@ -25,7 +21,6 @@ from novel_system.db.models import (
     StyleReferenceQuote,
     StyleReferenceRun,
     StyleReferenceValidationReport,
-    StyleRule,
 )
 
 
@@ -33,13 +28,6 @@ _LOGGER = logging.getLogger(__name__)
 
 # 物化提升落库的运行时风格行（approve 时由 ReviewItem 提升而来，以 source_review_id 标记来源）。
 # 删书须按 source_review_id 一并清除，否则孤儿行仍 runtime-active 注入下游成稿。
-_PROMOTED_STYLE_MODELS = (
-    StyleObservation,
-    StyleRule,
-    NarrativePattern,
-    BannedRuleCluster,
-    CalibrationLine,
-)
 
 
 def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
@@ -104,15 +92,6 @@ def purge_derived_data(session: Session, book_id: str) -> dict[str, int]:
         suffix = pid[-12:] if len(pid) > 12 else pid
         for prefix in ("review_style_ref_apply_", "review_style_ref_calib_"):
             pattern = f"{prefix}{suffix}_"
-            # 删除该 review 提升落库的运行时风格行;否则删书后这些 approved 行变孤儿,
-            # 仍 runtime-active 注入下游成稿(leak-after-delete / 删不干净)。
-            for model in _PROMOTED_STYLE_MODELS:
-                _exec(
-                    delete(model).where(
-                        model.source_review_id.startswith(pattern, autoescape=True)
-                    ),
-                    "promoted_style_rows",
-                )
             _exec(
                 delete(ReviewItem).where(
                     ReviewItem.review_id.startswith(pattern, autoescape=True)

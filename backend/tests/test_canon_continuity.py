@@ -19,7 +19,6 @@ from novel_system.db.models import (
 )
 from novel_system.services.canon_continuity import CanonContinuityService
 from novel_system.services.errors import DomainError
-from novel_system.services.longform_control import LongformControlService
 from novel_system.services.narrative_event_log import NarrativeEventLog
 
 
@@ -177,19 +176,6 @@ def test_pending_extraction_cannot_pollute_runtime_projection(session) -> None:
     )
     assert projected.get("injury") is None
     assert raw_entity_not_in_accepted_index(session, seeded["project_id"], "林远")
-
-
-def test_longform_dashboard_rejects_stale_synced_flag_without_canon_proof(session) -> None:
-    seeded = _seed_scene(session, "STALE_DASHBOARD")
-
-    report = LongformControlService(session).dashboard()
-    chapter = next(
-        row for row in report["chapters"] if row["chapter_id"] == seeded["chapter_id"]
-    )
-
-    assert chapter["canon_continuity"]["complete"] is False
-    assert chapter["canon_continuity"]["synced_scene_count"] == 0
-    assert chapter["canon_continuity"]["pending_scene_ids"] == [seeded["scene_id"]]
 
 
 def raw_entity_not_in_accepted_index(session, project_id: str, entity_id: str) -> bool:

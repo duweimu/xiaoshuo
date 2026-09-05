@@ -1,8 +1,8 @@
 # AI 小说创作系统
 
-这是一个面向单机、单作者工作流的长篇小说创作系统。正式界面是 `frontend-react/` 的 React 工作台；旧 `frontend/` 仅用于兼容回归。
+这是一个面向单机、单作者工作流的长篇小说创作系统。正式界面是 `frontend-react/` 的 React 工作台。
 
-当前产品主线是：新建作品 → 雪花十步构思 → 物化章节与场景 → 逐场 AI 起草或人工写作 → 作者复核并提升权威正文。系统提供长篇契约、带正文证据的正史事实链、连续性检查、内容与来源安全提示、LLM 额度、后台任务恢复和审计证据，但不应被理解为多用户 SaaS、生产级高可用服务或自动出版裁决器。
+当前产品主线是：新建作品 → 雪花十步构思 → 物化章节与场景 → 逐场 AI 起草或人工写作 → 作者复核并提升权威正文。系统提供带正文证据的正史事实链、连续性检查、内容与来源安全提示、LLM 用量记账和后台任务恢复，但不应被理解为多用户 SaaS、生产级高可用服务或自动出版裁决器。2026-09 的减法已经移除结果治理/盲评实验、知识提升与索引发布台、长篇控制塔、互操作导出台、旧 Vue 前端以及一批只有旧界面才能触达的 v1 接口。
 
 ## 当前界面与能力边界
 
@@ -14,12 +14,12 @@
 - `风格`：上传参考书并学习抽象风格画像。
 - `待办`、`资料`：处理人工决策与故事资料。
 
-切到高级模式后会显示 `章节编排`、`AI 起草台`、`成稿中心`、质量/盲评和运维工具。
+切到高级模式后会显示 `章节编排`、`AI 起草台`、`成稿中心`、`文学质量` 和 `成本看板`。
 
 当前需要特别区分：
 
 - 新建作品、雪花步骤保存/批准、结构物化、逐场 AI 起草、草稿同步和权威正文提升都有真实后端链路。
-- 演示作品与假生成已退役：不再有内置演示作品（原 `潮汐档案`/`盐镇来信`）、长篇控制塔演示视图或离线确定性桩生成。所有生成节点一律 fail-closed——未配置可用 LLM 时返回 409/502 与 `author_action` 引导，绝不返回罐头文本。
+- 演示作品与假生成已退役：不再有内置演示作品（原 `潮汐档案`/`盐镇来信`）或离线确定性桩生成。所有生成节点一律 fail-closed——未配置可用 LLM 时返回 409/502 与 `author_action` 引导，绝不返回罐头文本。
 - 高级 `章节编排` 的 `运行本章` 会启动持久化章节任务、轮询真实进度，并明确展示阻断、失败与模型未配置状态。
 - `成稿中心` 的终稿批准必须先完成当前终稿的正史事实复核，再显式确认已通读当前服务端正文，随后依次写入正文哈希确认和项目级 `approve-final`。未接受的模型候选不会进入后续提示词；目录不能直接伪造 `approved`，重开终稿必须填写原因，并由服务端级联撤销受影响的后续批准。
 
@@ -68,12 +68,6 @@ uv export --locked --extra dev --extra chroma --no-emit-project --format require
 .\restart-dev.cmd
 ```
 
-旧 Vue 界面不会默认启动。仅做兼容回归时使用：
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -IncludeLegacyVue
-```
-
 ## 推荐创作路径
 
 1. 从作品切换器选择 `新建作品`，填写标题、题材、目标字数/章节数和起始大纲。
@@ -89,7 +83,7 @@ powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -IncludeLegacyVue
 
 ## 数据库与迁移
 
-当前代码要求唯一 Alembic head `20260818_0082`。`20260802_0077` 合并了曾发布的
+当前代码要求唯一 Alembic head `20260904_0083`（该版本删除已退役功能的数据表，不可回退，升级前请先备份）。`20260802_0077` 合并了曾发布的
 `20260717_0074 -> 20260717_0075` real-only 分支与
 `20260722_0074 -> 20260725_0076` 雪花分章分支；旧分支数据库可直接执行
 `alembic upgrade head`，不要手工修改 `alembic_version`。
@@ -101,17 +95,7 @@ cd backend
 .\.venv\Scripts\python.exe -m alembic upgrade head
 ```
 
-`0073` 会把历史 LLM 审计中的提示词、草稿、模型输出和供应商错误正文改写为有界指纹；正文仍保留在各自权威业务表中。该脱敏不可逆，升级已有数据库前应先备份。若要先只统计历史审计风险：
-
-```powershell
-.\.venv\Scripts\python.exe -m novel_system.tools.llm_audit_scrub --database .\novel_system.db --dry-run
-```
-
-升级后可做严格预检：
-
-```powershell
-.\.venv\Scripts\python.exe -m novel_system.tools.database_preflight .\novel_system.db --expected-revision 20260818_0082
-```
+`0073` 会把历史 LLM 审计中的提示词、草稿、模型输出和供应商错误正文改写为有界指纹；正文仍保留在各自权威业务表中。该脱敏不可逆，升级已有数据库前应先备份。
 
 `/live` 只表示进程存活；`/ready` 还会检查数据库连接、迁移版本和必需结构，部署探针应使用两者的不同语义。
 
@@ -174,7 +158,7 @@ React 主线的浏览器契约验收会使用隔离 SQLite 数据库和中性测
 powershell -ExecutionPolicy Bypass -File scripts/verify_react_e2e.ps1
 ```
 
-Linux/CI 使用等价入口：`bash scripts/verify_react_e2e.sh`。GitHub Actions 会在每次 PR/push 中运行后端测试、React 单测与构建、React 契约 E2E，以及旧 Vue 兼容测试。
+Linux/CI 使用等价入口：`bash scripts/verify_react_e2e.sh`。GitHub Actions 会在每次 PR/push 中运行后端测试、React 单测与构建和 React 契约 E2E。
 
 关键代码入口：
 

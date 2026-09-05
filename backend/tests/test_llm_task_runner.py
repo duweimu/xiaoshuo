@@ -631,7 +631,7 @@ def test_all_production_run_task_calls_pass_explicit_context() -> None:
             if not any(keyword.arg == "context" for keyword in node.keywords):
                 offenders.append(location)
 
-    assert len(calls) == 4
+    assert len(calls) == 3
     assert offenders == []
 
 
@@ -666,8 +666,6 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         ("services/scene_blueprint.py", "SceneBlueprintService", "generate"),
         # Hard/Soft QC 的 LLM 调用已收敛为模块级统一降级出口（两引擎共用一个 .run( 调用点）
         ("services/qc_engine.py", "", "_qc_run_node_with_degradation"),
-        ("services/scene_quality.py", "SceneAutoRewriteService", "_generate_llm_candidate"),
-        ("services/writer_review.py", "WriterReviewService", "_run_scene_revision"),
     }
     calls: list[tuple[str, str, str, bool]] = []
 
@@ -721,7 +719,7 @@ def test_only_the_eleven_verified_scene_run_calls_may_derive_context() -> None:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         RunVisitor(relative_path).visit(tree)
 
-    assert len(calls) == 21
+    assert len(calls) == 14
     actual_without_context = {(path, class_name, function_name) for path, class_name, function_name, has_context in calls if not has_context}
     assert actual_without_context == allowed_without_context
 

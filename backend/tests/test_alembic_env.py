@@ -39,8 +39,8 @@ def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
         columns = [row[1] for row in connection.execute("PRAGMA table_info(chapter_states)").fetchall()]
         chapter_goal_columns = [row[1] for row in connection.execute("PRAGMA table_info(chapter_goals)").fetchall()]
         scene_card_columns = [row[1] for row in connection.execute("PRAGMA table_info(scene_cards)").fetchall()]
-        staged_backfill_exists = connection.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' AND name='staged_backfill'"
+        canon_commits_exists = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='canon_commits'"
         ).fetchone()
     finally:
         connection.close()
@@ -52,7 +52,7 @@ def test_alembic_upgrade_respects_database_url_env(tmp_path: Path) -> None:
     assert "trashed_flag" in scene_card_columns
     assert "trashed_at" in scene_card_columns
     assert "trashed_by" in scene_card_columns
-    assert staged_backfill_exists == ("staged_backfill",)
+    assert canon_commits_exists == ("canon_commits",)
 
 
 def test_alembic_upgrade_repairs_existing_human_review_event_table(tmp_path: Path) -> None:

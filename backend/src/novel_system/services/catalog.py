@@ -21,7 +21,14 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from novel_system.db.models import AuthorDraft, ChapterGoal, SceneCard, StoryCharacter, StoryProject
+from novel_system.db.models import (
+    AuthorDraft,
+    ChapterGoal,
+    SceneCard,
+    SceneRunState,
+    StoryCharacter,
+    StoryProject,
+)
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
@@ -732,6 +739,8 @@ class CatalogService:
                     },
                 )
                 self.session.add(scene)
+                # 导入路径不在这里补建 SceneRunState：测试夹具（fixture_works）经由本路径
+                # 播种并自行管理状态行；运行本章对缺行场景会惰性补建（chapter_runner）。
                 created_scenes += 1
         project.approved_chapter_ids_json = created_chapter_ids[:approved_prefix_length]
         if expected_current_index is None:
@@ -807,6 +816,9 @@ class CatalogService:
             writer_brief_json={"source": "catalog_api", "title": title, "primary_form": kind, **brief},
         )
         self.session.add(scene)
+        # 与 v1 scenes POST 同约定补建运行时状态行：章节运行（运行本章）按 scene_id
+        # 取 SceneRunState，缺行会让整章一起步就 SCENE_NOT_FOUND。
+        self.session.add(SceneRunState(scene_id=scene.scene_id, scene_status="ready"))
         self.session.flush()
         ordered = list(scenes)
         ordered.insert(max(0, min(position, len(ordered))), scene)

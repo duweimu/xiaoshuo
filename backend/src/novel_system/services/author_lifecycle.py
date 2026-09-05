@@ -7,8 +7,6 @@ from sqlalchemy.orm import Session
 
 from novel_system.db.models import (
     AttemptTracker,
-    ChapterAuditFinding,
-    ChapterContract,
     ChapterGoal,
     ChapterMemory,
     ChapterRollingNote,
@@ -16,7 +14,6 @@ from novel_system.db.models import (
     ChapterState,
     FinalScene,
     HumanReviewEvent,
-    InteropArtifact,
     QcReport,
     ReviewItem,
     SceneBlueprint,
@@ -25,10 +22,8 @@ from novel_system.db.models import (
     SceneDraft,
     SceneExecutionContract,
     SceneMemory,
-    SceneQualityContract,
     SceneRunState,
     StoryProject,
-    StagedBackfill,
     utcnow,
 )
 from novel_system.services.chapter_approval import (
@@ -145,92 +140,6 @@ class AuthorLifecycleService:
             "trash_block_reason": trash_block_reason,
         }
 
-    def author_workspace_payload(self, chapter_id: str) -> dict:
-        chapter = self.require_active_chapter(chapter_id)
-        chapter_state = self.session.get(ChapterState, chapter_id)
-        scenes = self._chapter_scenes(chapter_id, trashed_flag=0)
-        scene_states = {
-            state.scene_id: state
-            for state in self.session.execute(
-                select(SceneRunState).where(SceneRunState.scene_id.in_([scene.scene_id for scene in scenes]))
-            ).scalars().all()
-        }
-        return {
-            "chapter": self.serialize_chapter(chapter),
-            "chapter_state": self.serialize_chapter_state(chapter_state, chapter_id),
-            "scenes": [self.serialize_author_scene(scene, scene_states.get(scene.scene_id)) for scene in scenes],
-        }
-
-    def scene_draft_payload(self, chapter_id: str) -> dict:
-        chapter = self.require_active_chapter(chapter_id)
-        draft = self._empty_scene_draft_payload(chapter_id)
-        previous_scene = self._last_active_scene(chapter_id)
-        if previous_scene is not None:
-            draft.update(
-                {
-                    "pov_character_id": previous_scene.pov_character_id or "",
-                    "onstage_chars_json": list(previous_scene.onstage_chars_json or []),
-                    "location": previous_scene.location or "",
-                    "target_length_band": previous_scene.target_length_band or "medium",
-                    "scene_type": previous_scene.scene_type or "reunion",
-                }
-            )
-        draft["scene_goal"] = self._smart_scene_goal(chapter, previous_scene)
-        draft["forbidden_text"] = chapter.must_not or ""
-        draft["hook"] = self._smart_scene_hook(chapter)
-        return draft
-
-    def _empty_scene_draft_payload(self, chapter_id: str) -> dict:
-        return {
-            "scene_id": self._suggest_next_scene_id(chapter_id),
-            "chapter_id": chapter_id,
-            "scene_seq": self.next_scene_append_seq(chapter_id),
-            "pov_character_id": "",
-            "onstage_chars_json": [],
-            "location": "",
-            "scene_goal": "",
-            "beats_json": [],
-            "must_include_text": "",
-            "forbidden_text": "",
-            "exit_change": "",
-            "hook": "",
-            "target_length_band": "medium",
-            "scene_type": "reunion",
-            "is_chapter_last": 0,
-        }
-
-    def _smart_scene_goal(self, chapter: ChapterGoal, previous_scene: SceneCard | None) -> str:
-        goal_text = (chapter.main_plot_push or chapter.chapter_goal or "").strip()
-        previous_exit_change = (previous_scene.exit_change if previous_scene is not None else "") or ""
-        previous_exit_change = previous_exit_change.strip()
-        if previous_exit_change and goal_text:
-            return f"承接上一场景变化：{previous_exit_change}；推进本章目标：{goal_text}"
-        if previous_exit_change:
-            return f"承接上一场景变化：{previous_exit_change}"
-        if goal_text:
-            return f"推进本章目标：{goal_text}"
-        return ""
-
-    def _smart_scene_hook(self, chapter: ChapterGoal) -> str:
-        ending_effect = (chapter.ending_effect or "").strip()
-        if ending_effect:
-            return f"朝向本章结尾效果：{ending_effect}"
-        emotional_target = (chapter.emotional_target or "").strip()
-        if emotional_target:
-            return f"维持情绪目标：{emotional_target}"
-        return ""
-
-    def author_trash_payload(self) -> dict:
-        chapters = self.session.execute(
-            select(ChapterGoal).where(ChapterGoal.trashed_flag == 1).order_by(ChapterGoal.chapter_id.asc())
-        ).scalars().all()
-        scenes = self.session.execute(
-            select(SceneCard).where(SceneCard.trashed_flag == 1).order_by(SceneCard.chapter_id.asc(), SceneCard.scene_seq.asc(), SceneCard.scene_id.asc())
-        ).scalars().all()
-        return {
-            "chapters": [self.serialize_trashed_chapter(chapter) for chapter in chapters],
-            "scenes": [self.serialize_trashed_scene(scene) for scene in scenes],
-        }
 
     def trash_scenes(self, scene_ids: list[str], actor_ref: str) -> dict:
         processed: list[dict] = []
@@ -487,13 +396,6 @@ class AuthorLifecycleService:
             if chapter_state is not None:
                 self.session.delete(chapter_state)
                 self.session.flush()
-            self.session.execute(
-                delete(ChapterAuditFinding).where(ChapterAuditFinding.chapter_id == chapter_id)
-            )
-            self.session.execute(
-                delete(ChapterContract).where(ChapterContract.chapter_id == chapter_id)
-            )
-            self.session.flush()
             self.session.delete(chapter)
             processed.append({"chapter_id": chapter_id, "scene_ids": scene_ids})
         self.session.flush()
@@ -614,12 +516,6 @@ class AuthorLifecycleService:
         if self._has_rows(select(SceneBlueprint.row_id).where(SceneBlueprint.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(
-            select(SceneQualityContract.contract_id).where(
-                SceneQualityContract.scene_id == scene.scene_id
-            )
-        ):
-            return SCENE_RUNTIME_ARTIFACTS_REASON
-        if self._has_rows(
             select(SceneExecutionContract.contract_id).where(
                 SceneExecutionContract.scene_id == scene.scene_id
             )
@@ -640,10 +536,6 @@ class AuthorLifecycleService:
         if self._has_rows(select(HumanReviewEvent.event_id).where(HumanReviewEvent.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(ChapterRunJob.job_id).where(ChapterRunJob.scene_id == scene.scene_id)):
-            return SCENE_RUNTIME_ARTIFACTS_REASON
-        if self._has_rows(select(StagedBackfill.stage_id).where(StagedBackfill.scene_id == scene.scene_id)):
-            return SCENE_RUNTIME_ARTIFACTS_REASON
-        if self._has_rows(select(InteropArtifact.artifact_id).where(InteropArtifact.scene_id == scene.scene_id)):
             return SCENE_RUNTIME_ARTIFACTS_REASON
         return None
 
@@ -705,8 +597,6 @@ class AuthorLifecycleService:
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(select(ChapterRollingNote.row_id).where(ChapterRollingNote.chapter_id == chapter.chapter_id)):
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
-        if self._has_rows(select(StagedBackfill.stage_id).where(StagedBackfill.chapter_id == chapter.chapter_id)):
-            return CHAPTER_RUNTIME_ARTIFACTS_REASON
         if self._has_rows(
             select(ReviewItem.review_id).where(ReviewItem.chapter_id == chapter.chapter_id, ReviewItem.scene_id.is_(None))
         ):
@@ -727,10 +617,6 @@ class AuthorLifecycleService:
                 QcReport.chapter_id == chapter.chapter_id,
                 QcReport.scene_id.is_(None),
             )
-        ):
-            return CHAPTER_RUNTIME_ARTIFACTS_REASON
-        if self._has_rows(
-            select(InteropArtifact.artifact_id).where(InteropArtifact.chapter_id == chapter.chapter_id, InteropArtifact.scene_id.is_(None))
         ):
             return CHAPTER_RUNTIME_ARTIFACTS_REASON
         for scene in self._chapter_scenes(chapter.chapter_id, trashed_flag=1):

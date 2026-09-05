@@ -124,25 +124,12 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
 @pytest.mark.parametrize(
     "path",
     [
-        "/api/v1/projects/UNKNOWN/outline-plan/UNKNOWN/approve",
-        "/api/v1/projects/UNKNOWN/chapters/UNKNOWN/run",
-        "/api/v1/projects/UNKNOWN/chapters/UNKNOWN/final-review",
-        "/api/v1/projects/UNKNOWN/reference-profiles",
-        "/api/v1/author-drafts/UNKNOWN/apply-patch-option",
-        "/api/v1/author-drafts/UNKNOWN/candidate-events",
-        "/api/v1/author-structure-candidates/UNKNOWN/apply",
-        "/api/v1/projects/UNKNOWN/chapter-drafts/open",
-        "/api/v1/revision-candidates/UNKNOWN/accept",
         "/api/v1/passages/patch-candidates",
         "/api/v1/passage-patch-candidates/UNKNOWN/reject",
         "/api/v1/literary-quality/analyze-text",
         "/api/v1/literary-quality/chapter-set-review",
         "/api/v1/review-items/UNKNOWN/resolve",
         "/api/v1/review-items/UNKNOWN/unresolve",
-        "/api/v1/review-items/UNKNOWN/approve",
-        "/api/v1/review-items/UNKNOWN/reject",
-        "/api/v1/review-items/UNKNOWN/release",
-        "/api/v1/human-review-events/UNKNOWN/actions",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/generate",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/fe-candidates",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/steps/book_brief/restore",
@@ -155,9 +142,6 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
         "/api/v2/projects/UNKNOWN/snowflake-workspace/orphaned-scenes/UNKNOWN/resolve",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/resync",
         "/api/v2/projects/UNKNOWN/snowflake-workspace/outline/approve",
-        "/api/v1/projects/UNKNOWN/snowflake/steps/book_brief/generate",
-        "/api/v1/projects/UNKNOWN/snowflake/artifacts/UNKNOWN/approve",
-        "/api/v1/projects/UNKNOWN/snowflake/materialize-outline-plan",
         "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/architecture/generate",
         "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/plan/candidates",
         "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN/plan/fill",
@@ -171,37 +155,13 @@ def test_flexible_json_body_rejects_excessive_nesting(client) -> None:
         "/api/v2/projects/UNKNOWN/library/relations",
         "/api/v2/projects/UNKNOWN/library/timeline",
         "/api/v2/projects/UNKNOWN/library/characters",
-        "/api/v2/projects/UNKNOWN/longform/anchors",
-        "/api/v2/projects/UNKNOWN/longform/chapters/UNKNOWN/contract/transition",
-        "/api/v2/projects/UNKNOWN/longform/chapters/UNKNOWN/audit",
-        "/api/v2/projects/UNKNOWN/longform/audit/UNKNOWN/adjudicate",
         "/api/v1/author-drafts/chapter/UNKNOWN/ensure",
         "/api/v1/author-drafts/chapter/UNKNOWN/ensure-blank",
-        "/api/v1/author-drafts/UNKNOWN/derive-from-generation",
-        "/api/v1/author-drafts/UNKNOWN/structure-extract",
-        "/api/v1/projects/UNKNOWN/discovery-draft/ensure",
-        "/api/v1/auto-rewrite-runs/UNKNOWN/promote",
-        "/api/v1/auto-rewrite-runs/UNKNOWN/rollback",
         "/api/v1/chapters/UNKNOWN/deep-review",
         "/api/v1/chapters/UNKNOWN/run/full",
-        "/api/v1/chapters/UNKNOWN/runtime/aggregate/final",
-        "/api/v1/chapters/UNKNOWN/runtime/manual-hold/clear",
-        "/api/v1/chapters/UNKNOWN/writer-review",
-        "/api/v1/chapters/UNKNOWN/writer-review/run",
-        "/api/v1/evaluation-experiments/UNKNOWN/freeze",
-        "/api/v1/index/verify/UNKNOWN/retry",
-        "/api/v1/longform-editor/diagnose",
-        "/api/v1/runtime/promotions/run-due",
-        "/api/v1/runtime/recovery/sweep",
         "/api/v1/scenes/UNKNOWN/deep-review",
-        "/api/v1/scenes/UNKNOWN/execution-contract",
-        "/api/v1/scenes/UNKNOWN/literary-blueprint",
         "/api/v1/scenes/UNKNOWN/preflight/create-cards",
-        "/api/v1/scenes/UNKNOWN/quality-contract",
         "/api/v1/scenes/UNKNOWN/resume-after-selection",
-        "/api/v1/scenes/UNKNOWN/triage",
-        "/api/v1/scenes/UNKNOWN/writer-review",
-        "/api/v1/scenes/UNKNOWN/writer-review/run",
         "/api/v1/system-config/UNKNOWN/activate",
         "/api/v1/system-config/llm/providers/UNKNOWN/default",
         "/api/v2/projects/UNKNOWN/restore",
@@ -228,7 +188,6 @@ def test_fixed_command_bodies_reject_unknown_fields_before_domain_lookup(
 @pytest.mark.parametrize(
     ("method", "path"),
     [
-        ("patch", "/api/v1/projects/UNKNOWN/snowflake/artifacts/UNKNOWN"),
         ("patch", "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN"),
         ("patch", "/api/v2/projects/UNKNOWN/catalog/scenes/UNKNOWN"),
         ("delete", "/api/v2/projects/UNKNOWN/catalog/chapters/UNKNOWN"),
@@ -240,8 +199,6 @@ def test_fixed_command_bodies_reject_unknown_fields_before_domain_lookup(
         ("delete", "/api/v2/projects/UNKNOWN/library/timeline/UNKNOWN"),
         ("delete", "/api/v2/projects/UNKNOWN/library/characters/UNKNOWN"),
         ("delete", "/api/v2/projects/UNKNOWN/library/entities/UNKNOWN"),
-        ("patch", "/api/v2/projects/UNKNOWN/longform/anchors/UNKNOWN"),
-        ("put", "/api/v2/projects/UNKNOWN/longform/chapters/UNKNOWN/contract"),
         ("delete", "/api/v1/system-config/llm/providers/UNKNOWN"),
         ("delete", "/api/v2/projects/UNKNOWN"),
         ("delete", "/api/v2/style-reference/banned-terms/UNKNOWN"),
@@ -264,33 +221,6 @@ def test_fixed_non_post_bodies_reject_unknown_fields_before_domain_lookup(
     assert response.status_code == 422
     assert any(item["type"] == "extra_forbidden" for item in _validation_issues(response))
     assert "must-not-be-echoed" not in response.text
-
-
-def test_review_demo_import_cannot_assign_server_owned_lifecycle_columns(client) -> None:
-    response = client.post(
-        "/api/v1/review-items/import-demo",
-        json={
-            "review_id": "boundary_review",
-            "item_type": "style_observation",
-            "candidate_text": "bounded fixture candidate",
-            "status": "approved",
-            "materialize_status": "succeeded",
-            "approved_item_row_id": "spoofed-row",
-        },
-    )
-
-    assert response.status_code == 422
-    forbidden = {
-        issue["field"].rsplit(".", 1)[-1]
-        for issue in _validation_issues(response)
-        if issue["type"] == "extra_forbidden"
-    }
-    assert forbidden == {
-        "approved_item_row_id",
-        "materialize_status",
-        "status",
-    }
-    assert "spoofed-row" not in response.text
 
 
 def test_every_open_json_mutation_schema_advertises_property_ceiling() -> None:

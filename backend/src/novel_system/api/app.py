@@ -18,24 +18,14 @@ from novel_system.api.openapi_contract import install_api_openapi_contract
 from novel_system.api.request_limits import RequestBodyLimitMiddleware
 from novel_system.api.routes import (
     author_drafts,
-    author_desk,
     catalog,
     canon_continuity,
     chapter_manuscripts,
     chapter_plan,
     chapters,
     cost,
-    domain,
-    evaluation_experiments,
-    indexing,
-    interop,
-    knowledge,
     library,
-    longform_tower,
-    literary_eval,
     literary_quality,
-    longform_control,
-    longform_editor,
     project_overview,
     projects,
     reference_safety,
@@ -43,13 +33,10 @@ from novel_system.api.routes import (
     scenes,
     snowflake,
     snowflake_workspace,
-    style_profile,
     style_reference,
     system_config,
     trash,
-    writer_room,
     writer_deep_review,
-    writer_review,
 )
 from novel_system.db import models  # noqa: F401
 from novel_system.db.base import Base
@@ -405,29 +392,16 @@ def create_app() -> FastAPI:
     app.include_router(project_overview.router)
     app.include_router(cost.router)
     app.include_router(author_drafts.router)
-    app.include_router(author_desk.router)
     app.include_router(chapter_manuscripts.router)
-    app.include_router(longform_control.router)
-    app.include_router(longform_editor.router)
     app.include_router(scenes.router)
     app.include_router(snowflake.router)
     app.include_router(snowflake_workspace.router)
-    app.include_router(writer_room.router)
-    app.include_router(writer_review.router)
     app.include_router(writer_deep_review.router)
     app.include_router(review.router)
-    app.include_router(domain.router)
     app.include_router(library.router)
-    app.include_router(longform_tower.router)
-    app.include_router(knowledge.router)
     app.include_router(reference_safety.router)
-    app.include_router(indexing.router)
-    app.include_router(interop.router)
     app.include_router(system_config.router)
-    app.include_router(literary_eval.router)
-    app.include_router(evaluation_experiments.router)
     app.include_router(literary_quality.router)
-    app.include_router(style_profile.router)
     app.include_router(style_reference.router)
     install_api_openapi_contract(app)
     return app

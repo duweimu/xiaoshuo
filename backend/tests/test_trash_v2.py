@@ -75,14 +75,12 @@ def test_project_trash_hides_children_from_legacy_author_routes(client):
     assert chapter_id not in {
         item["chapter_id"] for item in after.json()["data"]["items"]
     }
-    workspace = client.get(f"/api/v1/chapters/{chapter_id}/author-workspace")
-    assert workspace.status_code == 404
-    assert workspace.json()["error"]["code"] == "PROJECT_TRASHED"
 
     restored = _post(client, f"/api/v2/projects/{project_id}/restore")
     assert restored["trashed"] is False
-    visible_again = client.get(f"/api/v1/chapters/{chapter_id}/author-workspace")
+    visible_again = client.get("/api/v1/chapters")
     assert visible_again.status_code == 200
+    assert chapter_id in {item["chapter_id"] for item in visible_again.json()["data"]["items"]}
 
 
 def test_unified_trash_lists_three_levels(client, session):

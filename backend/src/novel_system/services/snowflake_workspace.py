@@ -192,6 +192,10 @@ class SnowflakeWorkspaceService:
             self._require_previous_gates(step_key, latest_by_step)
 
         generation_notice: dict[str, Any] | None = None
+        # FE 触发入口标签（fe_scaffold_ai / fe_candidate_adopt / …）：随 health_json
+        # 落库作为这一版草稿的出处事实，与 generation_source（llm/fallback/skip）并列。
+        # 请求层已界定为有界短标识，这里只做去空白。
+        trigger_source = str(body.get("source") or "").strip()[:64] or None
         if body.get("skip"):
             draft = self._skip_draft(step_key, body)
             source = "skip"
@@ -256,7 +260,12 @@ class SnowflakeWorkspaceService:
             status=status,
             draft_json=draft,
             health_json=self._step_health(
-                step_key, draft, status, generation_source=source, generation_notice=generation_notice
+                step_key,
+                draft,
+                status,
+                generation_source=source,
+                generation_notice=generation_notice,
+                trigger_source=trigger_source,
             ),
             input_refs_json=self._input_refs(step_key, latest_by_step),
             llm_call_id=llm_call_id,
@@ -271,6 +280,7 @@ class SnowflakeWorkspaceService:
             run.health_json = self._step_health(
                 step_key, draft, status, generation_source=source,
                 generation_notice=generation_notice or sync_notice,
+                trigger_source=trigger_source,
             )
         if status == "skipped":
             self._supersede_same_step(run)
@@ -492,7 +502,14 @@ class SnowflakeWorkspaceService:
         self._supersede_same_step(run)
         run.status = "approved"
         run.approved_at = utcnow()
-        run.health_json = self._step_health(step_key, run.draft_json or {}, "approved", generation_source=(run.health_json or {}).get("generation_source"))
+        run.health_json = self._step_health(
+            step_key,
+            run.draft_json or {},
+            "approved",
+            generation_source=(run.health_json or {}).get("generation_source"),
+            # 出处事实随确认保留：触发入口和 generation_source 一样是这一版草稿的来历。
+            trigger_source=(run.health_json or {}).get("trigger_source"),
+        )
         # Snapshot "what I consumed, at what version" so a later upstream revision can
         # be diffed field-by-field instead of blindly staling everything downstream.
         run.consumed_input_sigs_json = snapshot_consumed_sigs(
@@ -846,7 +863,7 @@ class SnowflakeWorkspaceService:
                         "onstage_chars_json": detail.get("onstage_chars_json") or [],
                         "location": detail.get("location") or None,
                         "scene_goal": detail.get("summary") or detail.get("title") or goal,
-                        "beats_json": detail.get("beats_json") or _beats_from_detail(scene_type, detail),
+                        "beats_json": _scene_card_beats(scene_type, detail),
                         "must_include_text": detail.get("must_include_text") or detail.get("summary") or "",
                         "forbidden_text": "不得复制参考书原文表达、人物、设定或桥段。",
                         "exit_change": detail.get("exit_change") or "场景结束时至少改变一个信息、关系或行动目标。",
@@ -1320,16 +1337,10 @@ class SnowflakeWorkspaceService:
             "cost_requirement": plan.cost_requirement,
             "primary_form": plan.scene_type,
         }
-        beats = list(plan.beats_json or [])
-        if not beats:
-            # 按场景类型分支取字段——反应场景的核心是 reaction/dilemma/decision，不是
-            # 主动场景的 goal/conflict/setback（对齐 snowflake_planner._beats_from_detail）。
-            fallback_fields = (
-                [plan.reaction, plan.dilemma, plan.decision]
-                if plan.scene_type == "reactive"
-                else [plan.goal, plan.conflict, plan.setback]
-            )
-            beats = [item for item in [*fallback_fields, plan.hook] if str(item or "").strip()]
+        # 与物化同一配方（_scene_card_beats）：两个写入方各算一套，刚物化完的每一场
+        # 都会因 beats_json 不同被报成「待同步」，横幅在物化当刻就喊 N 场。
+        detail = _scene_plan_payload(plan)
+        beats = _scene_card_beats(str(detail.get("scene_type") or "proactive"), detail)
         return {
             "scene_goal": plan.summary or plan.goal or scene.scene_goal,
             "beats_json": beats or list(scene.beats_json or []),
@@ -2358,9 +2369,10 @@ class SnowflakeWorkspaceService:
         *,
         generation_source: str | None = None,
         generation_notice: dict[str, Any] | None = None,
+        trigger_source: str | None = None,
     ) -> dict[str, Any]:
         if status == "skipped":
-            return {
+            health = {
                 "severity": "info",
                 "message": "step skipped with an explicit author reason",
                 "generation_source": generation_source or "skip",
@@ -2376,18 +2388,22 @@ class SnowflakeWorkspaceService:
                 "next_actions": [],
                 "hard_blockers": [],
             }
-        completeness = step_completeness(step_key, draft)
-        missing = completeness.get("missing_fields") or []
-        health = {
-            "severity": "warning" if missing else "info",
-            "message": "step has missing fields" if missing else "step draft is structurally complete",
-            "generation_source": generation_source or "fallback",
-            "missing_fields": missing,
-            **diagnose_step_pressure(step_key, draft),
-        }
-        if generation_notice:
-            health["generation_notice"] = deepcopy(generation_notice)
-            health["severity"] = "warning"
+        else:
+            completeness = step_completeness(step_key, draft)
+            missing = completeness.get("missing_fields") or []
+            health = {
+                "severity": "warning" if missing else "info",
+                "message": "step has missing fields" if missing else "step draft is structurally complete",
+                "generation_source": generation_source or "fallback",
+                "missing_fields": missing,
+                **diagnose_step_pressure(step_key, draft),
+            }
+            if generation_notice:
+                health["generation_notice"] = deepcopy(generation_notice)
+                health["severity"] = "warning"
+        # 只在 FE 真的带了触发入口时写入：脚本 / 旧客户端的运行不凭空长出一个标签。
+        if trigger_source:
+            health["trigger_source"] = trigger_source
         return health
 
     @staticmethod
@@ -2425,6 +2441,7 @@ class SnowflakeWorkspaceService:
             "stale_accepted_by": run.stale_accepted_by,
             "stale_accepted_note": run.stale_accepted_note,
             "generation_source": str((run.health_json or {}).get("generation_source") or ""),
+            "trigger_source": str((run.health_json or {}).get("trigger_source") or ""),
             "draft_summary": _draft_summary(run.draft_json or {}),
         }
         if include_draft:
@@ -2693,6 +2710,18 @@ def _scene_plan_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:
         "stale_accepted_note": scene.stale_accepted_note or "",
         "diagnosis": deepcopy(scene.diagnosis_json or {}),
     }
+
+
+def _scene_card_beats(scene_type: str, detail: dict[str, Any]) -> list[str]:
+    """``SceneCard.beats_json`` 的唯一配方，物化与 resync 共用。
+
+    规划行自带节拍就用它；否则按场景类型从 goal/conflict/setback（主动）或
+    reaction/dilemma/decision（反应）推导——即规划器 ``_beats_from_detail`` 的口径，
+    v1 物化路也是它。hook 不进节拍：它已经单独落在 ``SceneCard.hook`` 与 brief 的
+    ``next_scene_pull`` 上，resync 曾额外拼进去，正是「刚物化完就待同步」的来源。
+    """
+    beats = _coerce_string_list(detail.get("beats_json"))
+    return beats or _beats_from_detail(scene_type, detail)
 
 
 def _scene_list_payload(scene: SnowflakeScenePlan) -> dict[str, Any]:

@@ -1,7 +1,6 @@
 # 该清单必须与 api/app.py 实际 include_router 挂载的模块一一对应；
 # 防漂移守卫：tests/test_routes_all_manifest.py。
 __all__ = [
-    "author_desk",
     "author_drafts",
     "canon_continuity",
     "catalog",
@@ -9,17 +8,8 @@ __all__ = [
     "chapter_plan",
     "chapters",
     "cost",
-    "domain",
-    "evaluation_experiments",
-    "indexing",
-    "interop",
-    "knowledge",
     "library",
-    "literary_eval",
     "literary_quality",
-    "longform_control",
-    "longform_editor",
-    "longform_tower",
     "project_overview",
     "projects",
     "reference_safety",
@@ -27,11 +17,8 @@ __all__ = [
     "scenes",
     "snowflake",
     "snowflake_workspace",
-    "style_profile",
     "style_reference",
     "system_config",
     "trash",
     "writer_deep_review",
-    "writer_review",
-    "writer_room",
 ]

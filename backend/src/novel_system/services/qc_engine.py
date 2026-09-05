@@ -47,7 +47,6 @@ from novel_system.services.qc_constraints import (
 )
 from novel_system.services.qc_validator import QCValidationError, validate_qc_report
 from novel_system.services.scene_ownership import require_scene_project_id
-from novel_system.services.style_profile import StyleScoreService
 
 
 _LOGGER = logging.getLogger(__name__)
@@ -61,7 +60,6 @@ HARD_QC_REQUIRED_ISSUE_KEYS = {"missing_required_text", "missing_hard_constraint
 HARD_QC_STYLE_ONLY_ISSUE_KEYS = {
     "style_compliance",
     "style_rule_violation",
-    "style_profile_drift",
 }
 HARD_QC_NON_BLOCKING_LLM_ISSUE_KEYS = {"character_role_inconsistency"}
 UNSUBSTANTIATED_PRONOUN_CONTINUITY_KEYS = {
@@ -505,123 +503,12 @@ def _deterministic_quality_issues(
     if listing_issue is not None:
         issues.append(listing_issue)
     issues.extend(_event_log_consistency_issues(scene, content))
-    issues.extend(_theme_relevance_issues(scene))
-    issues.extend(_tension_curve_issues(scene))
     # Wave 2（§5.4 提案—复核）：确定性检测器的产出打上来源标——检测器即复核器，
     # 分类器据此允许 Q0/Q1 升级；LLM 提案没有这个标，只能走内联复核或降 Q2。
     for issue in issues:
         if isinstance(issue, dict):
             issue.setdefault("source", "deterministic")
     return issues
-
-
-def _theme_relevance_issues(scene: SceneCard) -> list[dict[str, Any]]:
-    """Blueprint §12 / §13 Step 6: check scene relevance to controlling idea."""
-    try:
-        from novel_system.services.theme_anchor import ThemeAnchorService
-        from novel_system.db.session import SessionLocal
-
-        session = SessionLocal()
-        try:
-            project_id = require_scene_project_id(session, scene)
-            svc = ThemeAnchorService(session)
-            idea = svc.get_controlling_idea(project_id)
-            if not idea:
-                return []
-            check = svc.check_scene_relevance(scene, idea)
-            if check.relevant:
-                return []
-            return [
-                {
-                    "issue_key": "theme_relevance_warning",
-                    "severity": "low",
-                    "message": (
-                        f"Scene has no visible connection to the controlling idea: '{idea}'. "
-                        f"{check.suggestion}"
-                    ),
-                    "details": {
-                        "controlling_idea": idea,
-                        "connection": check.connection,
-                    },
-                }
-            ]
-        finally:
-            session.close()
-    except Exception:
-        _LOGGER.warning(
-            "Theme relevance diagnostic degraded scene_id=%s",
-            scene.scene_id,
-            exc_info=True,
-        )
-        return []
-
-
-def _tension_curve_issues(scene: SceneCard) -> list[dict[str, Any]]:
-    """Blueprint §10: surface tension curve violations as QC issues.
-
-    Checks the scene's chapter for adjacent function-tag repeats and
-    tension-level monotony. Issues are low-severity (informational) —
-    they don't block generation but appear in the QC report so the
-    author/system can address rhythm problems.
-    """
-    try:
-        from novel_system.services.tension_curve import TensionCurveService
-        from novel_system.db.session import SessionLocal
-
-        session = SessionLocal()
-        try:
-            svc = TensionCurveService(session)
-            report = svc.validate_chapter(scene.chapter_id)
-            issues: list[dict[str, Any]] = []
-            for v in report.violations:
-                # Only surface violations relevant to the current scene
-                if v.scene_id != scene.scene_id:
-                    continue
-                issue_key = (
-                    "tension_adjacent_tag_repeat"
-                    if v.violation_type == "adjacent_tag_repeat"
-                    else "tension_monotony"
-                )
-                issues.append(
-                    {
-                        "issue_key": issue_key,
-                        "severity": "low",
-                        "message": f"§10 rhythm issue: {v.message}",
-                        "details": {
-                            "violation_type": v.violation_type,
-                            "scene_id": v.scene_id,
-                            "chapter_id": report.chapter_id,
-                        },
-                    }
-                )
-            # Also check hook violations for chapter-ending scenes
-            if getattr(scene, "is_chapter_last", 0) == 1:
-                hook_violations = svc.validate_chapter_hooks(scene.chapter_id)
-                for hv in hook_violations:
-                    if hv.scene_id != scene.scene_id:
-                        continue
-                    issues.append(
-                        {
-                            "issue_key": "tension_hook_type_missing",
-                            "severity": "low",
-                            "message": f"§10 hook issue: {hv.message}",
-                            "details": {
-                                "violation_type": hv.violation_type,
-                                "scene_id": hv.scene_id,
-                            },
-                        }
-                    )
-            return issues
-        finally:
-            session.close()
-    except Exception:
-        _LOGGER.warning(
-            "Tension curve diagnostic degraded scene_id=%s chapter_id=%s",
-            scene.scene_id,
-            scene.chapter_id,
-            exc_info=True,
-        )
-        return []
 
 
 def _event_log_consistency_issues(
@@ -1992,9 +1879,6 @@ class SoftQcEngine:
                     "carry_note_text": report.carry_note_text,
                 }
             )
-        style_entry = StyleScoreService.rewrite_brief_entry(report)
-        if style_entry is not None:
-            entries.append(style_entry)
         return entries
 
     def _persist_qc_report(

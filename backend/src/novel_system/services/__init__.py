@@ -13,5 +13,4 @@ __all__ = [
     "snowflake_workspace",
     "snowflake_workspace_assistant",
     "vector_store",
-    "version_manager",
 ]

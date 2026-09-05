@@ -47,8 +47,6 @@ chmod 600 "$CONFIG_SECRET_FILE" 2>/dev/null || true
 
 $PYTHON -m alembic upgrade head
 
-$PYTHON -m novel_system.tools.database_preflight
-
 echo "http://127.0.0.1:${PORT}" > "$URL_FILE"
 echo $$ > "$PID_FILE"
 exec "$PYTHON" -m uvicorn novel_system.api.app:create_app --factory --reload \

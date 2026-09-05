@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy.exc import IntegrityError
 
 from novel_system.db.models import AuthorPreferenceProfile
-from novel_system.tools.database_preflight import inspect_database
 
 
 REVISION_0071 = "20260716_0071"
@@ -128,65 +127,6 @@ def test_author_preference_model_accepts_supported_scopes_and_boolean_flags(sess
         "genre",
         "project",
         "chapter",
-    }
-
-
-def test_0072_migration_and_preflight_install_preference_checks(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database_path = tmp_path / "fresh-0072.db"
-    _migrate_database(
-        database_path,
-        REVISION_0072,
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-    )
-
-    result = inspect_database(database_path, "0072")
-
-    assert result["revision"] == REVISION_0072
-    assert result["expected_revision_canonical"] == REVISION_0072
-    assert result["missing_tables"] == []
-    assert result["missing_columns"] == {}
-    assert result["schema_errors"] == []
-    assert result["ready"] is True, result
-
-
-def test_0072_preflight_rejects_revision_stamp_without_preference_checks(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    database_path = tmp_path / "forged-0072.db"
-    _migrate_database(
-        database_path,
-        REVISION_0072,
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-    )
-    _downgrade_database(
-        database_path,
-        REVISION_0071,
-        monkeypatch=monkeypatch,
-        tmp_path=tmp_path,
-    )
-    with sqlite3.connect(database_path) as connection:
-        connection.execute(
-            "UPDATE alembic_version SET version_num = ?",
-            (REVISION_0072,),
-        )
-
-    result = inspect_database(database_path, REVISION_0072)
-    preference_errors = [
-        error
-        for error in result["schema_errors"]
-        if error.get("table") == "author_preference_profiles"
-    ]
-
-    assert result["ready"] is False
-    assert {error["name"] for error in preference_errors} == {
-        "ck_author_preference_profiles_scope_type",
-        "ck_author_preference_profiles_runtime_eligible",
     }
 
 

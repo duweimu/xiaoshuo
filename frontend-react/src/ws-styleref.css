@@ -404,6 +404,18 @@
 .sr-policy-detail { color: var(--ink-3); font-size: 12.5px; line-height: 1.6; }
 .sr-import-notice { display: flex; gap: 9px; align-items: flex-start; margin-top: 15px; padding: 11px 13px; border-radius: 10px; background: var(--gold-wash); color: var(--ink-2); font-size: 12px; line-height: 1.6; }
 .sr-import-notice svg { flex: 0 0 auto; margin-top: 2px; color: var(--gold); }
+/* Rights declaration — explicit tick boxes; the choose-file button stays disabled until they are ticked. */
+.sr-rights-list { display: grid; gap: 8px; margin: 16px 0 0; padding: 0; border: 0; }
+.sr-rights {
+  display: grid; grid-template-columns: 18px 1fr; gap: 11px; align-items: start; padding: 11px 13px;
+  border: 1px solid var(--line-1); border-radius: 10px; background: var(--paper-0); color: var(--ink-2);
+  font-size: 12.5px; line-height: 1.65; cursor: pointer; transition: border-color var(--t-fast), box-shadow var(--t-fast);
+}
+.sr-rights:hover { border-color: var(--line-2); }
+.sr-rights.is-checked { border-color: var(--sage); box-shadow: 0 0 0 3px var(--sage-wash); color: var(--ink-1); }
+.sr-rights input { width: 16px; height: 16px; margin: 2px 0 0; accent-color: var(--sage); cursor: pointer; }
+.sr-rights input:focus-visible { outline: 2px solid var(--crimson); outline-offset: 3px; }
+.sr-rights-hint { margin: 2px 0 0; padding: 0 2px; color: var(--crimson); font-size: 12px; line-height: 1.6; }
 .sr-import-actions { display: flex; justify-content: flex-end; gap: 9px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line-1); }
 
 @media (max-width: 1280px) {

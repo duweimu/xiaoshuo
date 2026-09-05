@@ -3,7 +3,7 @@
 from concurrent.futures import ThreadPoolExecutor
 
 from novel_system.db.models import utcnow
-from novel_system.services.versioning.shared import now_iso
+from novel_system.db.models import utcnow as now_iso
 
 
 def test_utcnow_strictly_increasing_under_rapid_calls():

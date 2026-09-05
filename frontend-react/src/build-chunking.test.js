@@ -15,8 +15,6 @@ describe("生产构建业务域分块", () => {
     ["ws-author.jsx", "domain-author"],
     ["ws-library-edit.jsx", "domain-library"],
     ["ws-manuscripts.jsx", "domain-manuscripts"],
-    ["ws-eval.jsx", "domain-quality"],
-    ["ws-ops.jsx", "domain-operations"],
     ["ws-settings-ai.jsx", "domain-settings"],
   ])("将 %s 放入 %s", (file, expected) => {
     expect(domainChunk(`E:\\repo\\frontend-react\\src\\${file}`)).toBe(expected);
@@ -43,8 +41,8 @@ describe("生产构建业务域分块", () => {
     const app = fs.readFileSync(path.join(srcRoot, "ws-app.jsx"), "utf8");
     for (const moduleName of [
       "ws-home.jsx", "ws-snow.jsx", "ws-flowmap.jsx", "ws-styleref.jsx", "ws-library.jsx",
-      "ws-author.jsx", "ws-scene.jsx", "ws-manuscripts.jsx", "ws-quality.jsx", "ws-eval.jsx",
-      "ws-cost.jsx", "ws-ops.jsx", "ws-settings.jsx", "ws-writer.jsx",
+      "ws-author.jsx", "ws-scene.jsx", "ws-manuscripts.jsx", "ws-quality.jsx",
+      "ws-cost.jsx", "ws-settings.jsx", "ws-writer.jsx",
     ]) {
       expect(app, moduleName).toContain(`import("./${moduleName}")`);
     }

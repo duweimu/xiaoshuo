@@ -82,7 +82,6 @@ from novel_system.services.scene_run_checkpoint import (
 )
 from novel_system.services.scene_archive_checkpoint import SceneArchiveCheckpoint
 from novel_system.services.scene_archive_effects import SceneArchiveEffects
-from novel_system.services.version_manager import VersionManager
 
 if TYPE_CHECKING:
     from novel_system.services.prose_event_extractor import ProseExtractionResult
@@ -103,7 +102,6 @@ class Orchestrator:
         self.bundle_builder = BundleBuilder(session)
         self.archiver = Archiver(session)
         self.aggregator = Aggregator(session)
-        self.version_manager = VersionManager(session)
         llm_runner = LLMNodeRunner(session)
         self.llm_runner = llm_runner
         self.scene_generation_service = (
@@ -543,7 +541,6 @@ class Orchestrator:
         state.criticality_reasons_json = criticality.reasons
 
         # §10 / §12: pre-generation tension + theme diagnostics
-        self._run_pre_generation_diagnostics(scene, chapter)
 
         if self._checkpoint_reached("neutral_ready"):
             neutral_generation = self._load_checkpoint_draft(
@@ -6772,8 +6769,6 @@ class Orchestrator:
             log, scene, base, pov, all_chars
         )
 
-    def _record_foreshadow_events(self, log, scene: SceneCard, base: dict) -> None:
-        return self._archive_effects()._record_foreshadow_events(log, scene, base)
 
     @staticmethod
     def _index_scene_to_vector_store(
@@ -6789,49 +6784,16 @@ class Orchestrator:
     def _detect_and_store_style_drift(self, scene: SceneCard) -> dict[str, Any]:
         return self._archive_effects()._detect_and_store_style_drift(scene)
 
-    def _find_next_chapter(self, scene: SceneCard) -> ChapterGoal | None:
-        return self._archive_effects()._find_next_chapter(scene)
-
-    def _load_style_baseline(self, scene: SceneCard) -> dict[str, float] | None:
-        return self._archive_effects()._load_style_baseline(scene)
 
     def _best_of_n_count(self, contract, *, criticality=None) -> int:
-        self._best_of_n_policy_cap = 1
-        if (
-            self.scene_generation_service._llm_runner.provider_execution_mode
-            != "online"
-        ):
-            return 1
-        scene_id = str(getattr(contract, "scene_id", "") or "").strip()
-        if not scene_id or not hasattr(self, "session"):
-            return 1
-        try:
-            from novel_system.services.quality_strategy import QualityStrategyResolver
+        """Number of style-draft candidates to generate for this run.
 
-            resolved = QualityStrategyResolver(self.session).resolve_for_scene(scene_id)
-        except Exception as exc:
-            _LOGGER.warning(
-                "quality strategy resolution failed closed for scene %s: %s",
-                scene_id,
-                exc,
-            )
-            return 1
-        if not resolved.best_of_n_enabled:
-            _LOGGER.info(
-                "Best-of-N remains disabled for scene %s cell=%s/%s blockers=%s",
-                scene_id,
-                resolved.genre,
-                resolved.scene_function,
-                resolved.blockers,
-            )
-            return 1
-        policy_n = max(1, int(resolved.best_of_n_n))
-        self._best_of_n_policy_cap = policy_n
-        if criticality is not None:
-            # Criticality is still the cost allocator, while the evidence policy
-            # is the hard authorization.  Full-rigor UI intent cannot bypass it.
-            return max(1, min(policy_n, int(criticality.initial_best_of_n)))
-        return policy_n
+        The evidence-gated Best-of-N authorization policy was retired; production
+        runs always draft a single candidate.  Tests may override this method to
+        exercise the multi-candidate selection machinery.
+        """
+        self._best_of_n_policy_cap = 1
+        return 1
 
     def _best_of_n_max_count(self, *, criticality=None, initial_count: int) -> int:
         """Cap progressive candidate expansion by the evidence authorization.
@@ -7282,61 +7244,6 @@ class Orchestrator:
             ),
         )
 
-    def _run_pre_generation_diagnostics(
-        self, scene: SceneCard, chapter: ChapterGoal | None
-    ) -> None:
-        """Blueprint §10/§12: pre-generation tension curve + theme relevance diagnostics.
-
-        These checks are non-blocking (logged as warnings) — the execution contract
-        handles hard blocking. This provides early feedback on rhythm and theme health.
-        """
-        # §10: tension curve adjacent-tag and monotony check
-        if chapter is not None:
-            try:
-                from novel_system.services.tension_curve import TensionCurveService
-
-                tension_svc = TensionCurveService(self.session)
-                tension_report = tension_svc.validate_chapter(chapter.chapter_id)
-                for v in tension_report.violations:
-                    _LOGGER.warning(
-                        "§10 tension violation in chapter %s scene %s: [%s] %s",
-                        chapter.chapter_id,
-                        v.scene_id,
-                        v.violation_type,
-                        v.message,
-                    )
-                # §10: chapter-end hook type adjacency check
-                hook_violations = tension_svc.validate_chapter_hooks(chapter.chapter_id)
-                for hv in hook_violations:
-                    _LOGGER.warning(
-                        "§10 hook violation in chapter %s scene %s: [%s] %s",
-                        chapter.chapter_id,
-                        hv.scene_id,
-                        hv.violation_type,
-                        hv.message,
-                    )
-            except Exception:
-                _LOGGER.debug("tension curve diagnostics skipped", exc_info=True)
-
-        # §12: theme relevance check
-        project_id = scene.project_id
-        if project_id:
-            try:
-                from novel_system.services.theme_anchor import ThemeAnchorService
-
-                theme_svc = ThemeAnchorService(self.session)
-                idea = theme_svc.get_controlling_idea(project_id)
-                if idea:
-                    check = theme_svc.check_scene_relevance(scene, idea)
-                    if not check.relevant:
-                        _LOGGER.warning(
-                            "§12 theme relevance warning for scene %s: %s — %s",
-                            scene.scene_id,
-                            check.connection,
-                            check.suggestion,
-                        )
-            except Exception:
-                _LOGGER.debug("theme relevance diagnostics skipped", exc_info=True)
 
     @staticmethod
     def _soft_qc_result_payload(soft_qc) -> dict[str, str | None]:

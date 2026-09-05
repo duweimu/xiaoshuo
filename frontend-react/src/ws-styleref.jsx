@@ -37,6 +37,25 @@ const SR_CLOUD_POLICIES = [
   },
 ];
 
+/* 导入权属声明（后端 ingest._normalize_rights_declaration §5.9）：
+   - analysis_rights：作者确认有权对这本书做风格分析（所有策略都要勾）
+   - send_rights：作者确认有权把段落送往云端模型；非 local_only 策略后端强制要求为 true，
+     否则 400 STYLE_REFERENCE_SEND_RIGHTS_DECLARATION_REQUIRED。声明缺失绝不由前端默认补上。 */
+const SR_RIGHTS_TERMS = {
+  analysis: "我确认拥有对这本书进行风格分析的权利，且只用于学习抽象技法，不复刻原文、人物或桥段。",
+  send: "我确认拥有这本书的发送权，并授权系统按所选策略把段落发送给已配置的云端模型供应商。",
+};
+
+function srPolicyNeedsSendRights(cloudPolicy) {
+  return cloudPolicy !== "local_only";
+}
+
+/* 声明是否满足所选策略：分析权必勾；云端策略额外要求发送权。 */
+function srRightsReady(cloudPolicy, rights) {
+  if (!rights || rights.analysis_rights !== true) return false;
+  return !srPolicyNeedsSendRights(cloudPolicy) || rights.send_rights === true;
+}
+
 /* ==========================================================
    风格参考 — Style Reference Module
    Pipeline: 书库 → 维度矩阵(抽取) → 风格画像 → 注入应用
@@ -356,9 +375,9 @@ function WsStyleRef({ go }) {
       <SrImportDialog
         open={importOpen}
         onClose={() => setImportOpen(false)}
-        onChoose={(policy) => {
+        onChoose={(policy, rights) => {
           setImportOpen(false);
-          if (window.srImportBook) window.srImportBook(policy);
+          if (window.srImportBook) window.srImportBook(policy, rights);
         }}
       />
     </div>
@@ -367,12 +386,20 @@ function WsStyleRef({ go }) {
 
 function SrImportDialog({ open, onClose, onChoose }) {
   const [policy, setPolicy] = useStSR("local_only");
+  const [analysisRights, setAnalysisRights] = useStSR(false);
+  const [sendRights, setSendRights] = useStSR(false);
   const dialogRef = React.useRef(null);
   const returnFocusRef = React.useRef(null);
+  const needsSend = srPolicyNeedsSendRights(policy);
+  // 发送权只在云端策略下有意义；切回 local_only 时声明里恒为 false，不带走多余授权。
+  const declaration = { declared: true, analysis_rights: analysisRights, send_rights: needsSend && sendRights };
+  const rightsReady = srRightsReady(policy, declaration);
 
   React.useEffect(() => {
     if (!open) return undefined;
     setPolicy("local_only");
+    setAnalysisRights(false);
+    setSendRights(false);
     returnFocusRef.current = document.activeElement;
     const focusTimer = setTimeout(() => {
       const first = dialogRef.current && dialogRef.current.querySelector("input, button");
@@ -424,10 +451,34 @@ function SrImportDialog({ open, onClose, onChoose }) {
             </label>
           ))}
         </fieldset>
+        <fieldset className="sr-rights-list">
+          <legend className="sr-policy-legend">权属声明</legend>
+          <label className={`sr-rights ${analysisRights ? "is-checked" : ""}`}>
+            <input type="checkbox" data-testid="sr-rights-analysis" checked={analysisRights} onChange={(event) => setAnalysisRights(event.target.checked)} />
+            <span>{SR_RIGHTS_TERMS.analysis}</span>
+          </label>
+          {needsSend && (
+            <label className={`sr-rights ${sendRights ? "is-checked" : ""}`}>
+              <input type="checkbox" data-testid="sr-rights-send" checked={sendRights} onChange={(event) => setSendRights(event.target.checked)} />
+              <span>{SR_RIGHTS_TERMS.send}</span>
+            </label>
+          )}
+          {!rightsReady && (
+            <p className="sr-rights-hint" data-testid="sr-rights-hint">
+              {needsSend ? "云端策略需要同时确认分析权与发送权，后端不接受未声明的上云导入；未获授权请改选「仅保存在本机」。" : "请先确认分析权，再选择文件。"}
+            </p>
+          )}
+        </fieldset>
         <div className="sr-import-notice"><I.ShieldCheck size={14} /><span>“仅本机”不会静默降级为上云；需要云端抽取时，必须重新以更开放的策略导入。</span></div>
         <footer className="sr-import-actions">
           <button type="button" className="btn btn-ghost" onClick={onClose}>取消</button>
-          <button type="button" className="btn btn-accent" data-testid="sr-import-choose-file" onClick={() => onChoose(policy)}><I.FileInput size={14} /> 选择文件</button>
+          <button
+            type="button"
+            className="btn btn-accent"
+            data-testid="sr-import-choose-file"
+            disabled={!rightsReady}
+            onClick={() => { if (rightsReady) onChoose(policy, declaration); }}
+          ><I.FileInput size={14} /> 选择文件</button>
         </footer>
       </section>
     </div>
@@ -1859,10 +1910,26 @@ async function srSyncBooks() {
   window.dispatchEvent(new CustomEvent("sr:books-changed"));
 }
 
-/* 导入参考书：文件选择 → POST import-upload（multipart，带幂等键） */
-function srImportBook(cloudPolicy = "local_only") {
+/* 把对话框收集的声明整理成后端 rights_declaration 的形状；local_only 且未声明时返回 null（后端记 declared=false）。 */
+function srBuildRightsDeclaration(cloudPolicy, rights) {
+  if (!rights || rights.declared === false) return null;
+  return {
+    declared: true,
+    analysis_rights: rights.analysis_rights === true,
+    send_rights: srPolicyNeedsSendRights(cloudPolicy) && rights.send_rights === true,
+    declared_by: getOperatorRef(),
+  };
+}
+
+/* 导入参考书：文件选择 → POST import-upload（multipart，带幂等键 + 权属声明） */
+function srImportBook(cloudPolicy = "local_only", rights = null) {
   if (!SR_CLOUD_POLICIES.some((item) => item.id === cloudPolicy)) {
     throw new Error("未知的参考书数据策略");
+  }
+  const rightsDeclaration = srBuildRightsDeclaration(cloudPolicy, rights);
+  // 与后端同一条红线：云端策略没有 send_rights=true 就不打开文件选择器，更不会发请求。
+  if (srPolicyNeedsSendRights(cloudPolicy) && !(rightsDeclaration && rightsDeclaration.send_rights)) {
+    throw new Error("云端策略需要作者先确认发送权声明；未获授权请改用「仅保存在本机」。");
   }
   const input = document.createElement("input");
   input.type = "file";
@@ -1878,6 +1945,8 @@ function srImportBook(cloudPolicy = "local_only") {
       fd.append("title", title);
       // 策略必须来自作者在导入前的显式选择；默认 local_only，绝不静默放宽出域范围。
       fd.append("cloud_policy", cloudPolicy);
+      // 后端以 JSON 串的 Form 字段接收声明（api/routes/style_reference.py import_book_upload）。
+      if (rightsDeclaration) fd.append("rights_declaration", JSON.stringify(rightsDeclaration));
       const headers = {
         "X-Idempotency-Key": "sr-import-" + Date.now().toString(36),
         "X-Operator-Ref": getOperatorRef(),
@@ -1890,7 +1959,12 @@ function srImportBook(cloudPolicy = "local_only") {
         body: fd,
       });
       const body = await res.json();
-      if (!body.ok) throw new Error((body.error && body.error.message) || "导入失败");
+      if (!body.ok) {
+        // 原样透出后端信封里的 message（含 STYLE_REFERENCE_SEND_RIGHTS_* 的引导语），附 code 便于对照日志。
+        const err = (body && body.error) || {};
+        const message = err.message || `导入失败（HTTP ${res.status}）`;
+        throw new Error(err.code ? `${message}［${err.code}］` : message);
+      }
       await srSyncBooks();
       window.alert(`已导入《${title}》（${(((body.data || {}).book || {}).total_chars || 0).toLocaleString()} 字）。`);
     } catch (e) { window.alert("导入失败：" + (e.message || e)); }
@@ -2131,4 +2205,4 @@ Object.assign(window, {
 });
 
 /* ESM 导出（Phase 1 机械追加；window.* 赋值过渡期保留） */
-export { WsStyleRef, SrImportDialog, SR_CLOUD_POLICIES, srImportBook };
+export { WsStyleRef, SrImportDialog, SR_CLOUD_POLICIES, SR_RIGHTS_TERMS, srImportBook, srRightsReady };

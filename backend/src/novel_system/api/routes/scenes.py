@@ -33,13 +33,10 @@ from novel_system.services.author_drafts import AuthorDraftService
 from novel_system.services.author_lifecycle import AuthorLifecycleService
 from novel_system.services.author_instructions import normalize_author_note
 from novel_system.services.author_state import compute_author_state
+from novel_system.services.chapter_state import chapter_state_snapshot
 from novel_system.services.chapter_approval import (
     is_chapter_approved,
     require_chapter_mutation_allowed,
-)
-from novel_system.services.chapter_runtime import (
-    ChapterRuntimeService,
-    clean_backfill_markers,
 )
 from novel_system.services.canonical_manuscripts import CanonicalSceneService
 from novel_system.services.errors import DomainError
@@ -53,16 +50,9 @@ from novel_system.services.pagination import paginate_select, resolve_pagination
 from novel_system.services.projects import ProjectService
 from novel_system.services.reference_safety import ReferenceSafetyService
 from novel_system.services.scene_blueprint import SceneBlueprintService
-from novel_system.services.scene_execution import (
-    SceneExecutionContractService,
-    SceneTriageService,
-)
+from novel_system.services.scene_execution import SceneExecutionContractService
 from novel_system.services.scene_notes import SceneNotesService
 from novel_system.services.scene_ownership import require_scene_project_id
-from novel_system.services.scene_quality import (
-    SceneAutoRewriteService,
-    SceneQualityService,
-)
 from novel_system.services.scene_run_checkpoint import SceneRunCheckpointService
 from novel_system.services.scene_run_jobs import (
     SceneRunJobService,
@@ -71,8 +61,7 @@ from novel_system.services.scene_run_jobs import (
 )
 from novel_system.services.scene_run_preflight import SceneRunPreflightService
 from novel_system.services.source_safety import source_profile_ids_from_snapshot
-from novel_system.services.style_profile import StyleScoreService
-from novel_system.services.text_validation import validate_user_text_payload
+from novel_system.services.text_validation import clean_backfill_markers, validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_scene_writer_brief
 from novel_system.services.writer_review import WriterReviewService
 
@@ -266,38 +255,6 @@ def trash_scenes(
         action=lambda: AuthorLifecycleService(session).trash_scenes(
             body["scene_ids"], actor_ref
         ),
-    )
-
-
-@router.post("/api/v1/scenes/restore")
-def restore_scenes(
-    payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)
-):
-    body = payload.model_dump(mode="json")
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/restore",
-        payload=body,
-        action=lambda: AuthorLifecycleService(session).restore_scenes(
-            body["scene_ids"]
-        ),
-    )
-
-
-@router.post("/api/v1/scenes/purge")
-def purge_scenes(
-    payload: SceneIdsRequest, request: Request, session: Session = Depends(get_session)
-):
-    body = payload.model_dump(mode="json")
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/purge",
-        payload=body,
-        action=lambda: AuthorLifecycleService(session).purge_scenes(body["scene_ids"]),
     )
 
 
@@ -529,18 +486,6 @@ def run_scene(
     )
 
 
-@router.get("/api/v1/scenes/{scene_id}/execution-contract")
-def get_scene_execution_contract(
-    scene_id: str, request: Request, session: Session = Depends(get_session)
-):
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    contract = SceneExecutionContractService(session).latest(scene_id)
-    return ok(
-        {"contract": SceneExecutionContractService(session).serialize(contract)},
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
 @router.post("/api/v1/scenes/{scene_id}/preflight/create-cards")
 def create_scene_preflight_cards(
     scene_id: str,
@@ -565,173 +510,6 @@ def create_scene_preflight_cards(
         path_template="/api/v1/scenes/{scene_id}/preflight/create-cards",
         payload={"scene_id": scene_id},
         action=create_cards,
-    )
-
-
-@router.post("/api/v1/scenes/{scene_id}/execution-contract")
-def generate_scene_execution_contract(
-    scene_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/execution-contract",
-        payload={"scene_id": scene_id},
-        action=lambda: {
-            "contract": SceneExecutionContractService(session).serialize(
-                SceneExecutionContractService(session).generate(
-                    scene_id, actor_ref=actor_ref
-                )
-            )
-        },
-    )
-
-
-@router.post("/api/v1/scenes/{scene_id}/triage")
-def triage_scene(
-    scene_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/triage",
-        payload={"scene_id": scene_id},
-        action=lambda: {
-            "triage": SceneTriageService(session).evaluate(
-                scene_id, actor_ref=actor_ref, mutate=True
-            )
-        },
-    )
-
-
-@router.post("/api/v1/scenes/{scene_id}/literary-blueprint")
-def generate_scene_literary_blueprint(
-    scene_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/literary-blueprint",
-        payload={"scene_id": scene_id},
-        action=lambda: SceneBlueprintService(session).serialize(
-            SceneBlueprintService(session).generate(scene_id, actor_ref=actor_ref)
-        ),
-    )
-
-
-@router.post("/api/v1/scenes/{scene_id}/quality-contract")
-def generate_scene_quality_contract(
-    scene_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/quality-contract",
-        payload={"scene_id": scene_id},
-        action=lambda: SceneQualityService(session).generate_contract(
-            scene_id, actor_ref=actor_ref
-        ),
-    )
-
-
-@router.get("/api/v1/scenes/{scene_id}/quality-state")
-def get_scene_quality_state(
-    scene_id: str, request: Request, session: Session = Depends(get_session)
-):
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    return ok(
-        SceneQualityService(session).quality_state(scene_id),
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
-@router.post("/api/v1/scenes/{scene_id}/auto-rewrite")
-def run_scene_auto_rewrite(
-    scene_id: str,
-    request: Request,
-    payload: SceneAutoRewriteRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    request_payload = (
-        payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    )
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/auto-rewrite",
-        payload={"scene_id": scene_id, **request_payload},
-        action=lambda: SceneAutoRewriteService(session).run(
-            scene_id,
-            mode=str(request_payload.get("mode") or "auto"),
-            actor_ref=actor_ref,
-        ),
-    )
-
-
-@router.post("/api/v1/auto-rewrite-runs/{run_id}/promote")
-def promote_auto_rewrite_run(
-    run_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/auto-rewrite-runs/{run_id}/promote",
-        payload={"run_id": run_id},
-        action=lambda: SceneAutoRewriteService(session).promote(
-            run_id, actor_ref=actor_ref
-        ),
-    )
-
-
-@router.post("/api/v1/auto-rewrite-runs/{run_id}/rollback")
-def rollback_auto_rewrite_run(
-    run_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/auto-rewrite-runs/{run_id}/rollback",
-        payload={"run_id": run_id},
-        action=lambda: SceneAutoRewriteService(session).rollback(
-            run_id, actor_ref=actor_ref
-        ),
     )
 
 
@@ -914,66 +692,6 @@ def scene_status(
     )
 
 
-@router.get("/api/v1/scenes/{scene_id}/attempts")
-def scene_attempts(
-    scene_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-    page: int | None = None,
-    page_size: int | None = None,
-    cursor: str | None = None,
-    limit: int | None = None,
-):
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    page_items, pagination = paginate_select(
-        session,
-        select(AttemptTracker).where(AttemptTracker.scene_id == scene_id),
-        request=resolve_pagination_request(
-            page=page, page_size=page_size, cursor=cursor, limit=limit
-        ),
-        order_columns=((AttemptTracker.attempt_id, "desc"),),
-        cursor_values=lambda item: [item.attempt_id],
-    )
-    return ok(
-        {
-            "items": [_serialize_attempt(item) for item in page_items],
-            "pagination": pagination,
-        },
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
-@router.get("/api/v1/scenes/{scene_id}/generation-history")
-def scene_generation_history(
-    scene_id: str, request: Request, session: Session = Depends(get_session)
-):
-    AuthorLifecycleService(session).require_active_scene(scene_id)
-    attempts = (
-        session.execute(
-            select(AttemptTracker)
-            .where(AttemptTracker.scene_id == scene_id)
-            .order_by(AttemptTracker.attempt_id.asc())
-        )
-        .scalars()
-        .all()
-    )
-    lookups = _load_generation_history_lookups(session, attempts)
-    return ok(
-        {
-            "scene_id": scene_id,
-            "items": [
-                _serialize_generation_history_item(
-                    item,
-                    attempt_order=index + 1,
-                    lookups=lookups,
-                )
-                for index, item in enumerate(attempts)
-            ],
-        },
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
 def _latest_selection_gate_event(
     session: Session, scene_id: str
 ) -> HumanReviewEvent | None:
@@ -1116,210 +834,6 @@ def get_scene_style_candidates(
     )
 
 
-@router.get("/api/v1/scenes/{scene_id}/orchestration-signals")
-def get_scene_orchestration_signals(
-    scene_id: str, request: Request, session: Session = Depends(get_session)
-):
-    """§0: surface orchestration-layer decisions at the right resolution.
-
-    Aggregates the author-facing quality signals the engine computes but normally
-    keeps internal: Best-of-N dispersion + scene criticality (§6), foreshadow debt
-    health (§5), theme expression budget (§12), and active style-drift correction (§9).
-    One read for the workbench to render its "编排信号" panel.
-    """
-    scene = session.get(SceneCard, scene_id)
-    if scene is None:
-        return ok(
-            {"scene_id": scene_id, "available": False},
-            req_id=getattr(request.state, "request_id", None),
-        )
-
-    project_id = require_scene_project_id(session, scene)
-    state = session.get(SceneRunState, scene_id)
-
-    # §6 dispersion + criticality
-    dispersion_score = state.candidate_dispersion_score if state else None
-    signals: dict[str, Any] = {
-        "scene_id": scene_id,
-        "available": True,
-        "dispersion": {
-            "score": dispersion_score,
-            "signal": (
-                "low"
-                if dispersion_score is not None and dispersion_score < 0.15
-                else "adequate" if dispersion_score is not None else None
-            ),
-        },
-        "criticality": (
-            {
-                "level": state.criticality_level,
-                "reasons": state.criticality_reasons_json or [],
-            }
-            if state and state.criticality_level
-            else None
-        ),
-        # Wave 3（§5.5/§5.8）：场景 token 预算——5× 上限使用率的编排信号
-        "token_budget": (
-            {
-                "budget": state.scene_token_budget,
-                "used": int(state.scene_tokens_used or 0),
-                "remaining": (
-                    max(
-                        0,
-                        int(state.scene_token_budget)
-                        - int(state.scene_tokens_used or 0),
-                    )
-                    if state.scene_token_budget is not None
-                    else None
-                ),
-                "run_policy": state.run_policy,
-            }
-            if state is not None
-            else None
-        ),
-        "degraded_signals": [],
-    }
-
-    def degrade_signal(signal_name: str, exc: Exception) -> None:
-        error_code = (
-            exc.code
-            if isinstance(exc, DomainError)
-            else "SCENE_SIGNAL_COMPUTATION_FAILED"
-        )
-        signals[signal_name] = None
-        signals["degraded_signals"].append(
-            {
-                "signal": signal_name,
-                "error_code": error_code,
-            }
-        )
-        _LOGGER.warning(
-            "orchestration signal degraded signal=%s scene_id=%s request_id=%s error_code=%s",
-            signal_name,
-            scene_id,
-            getattr(request.state, "request_id", None),
-            error_code,
-            exc_info=True,
-        )
-
-    # 审计 P-11：最近一次 bundle 的降级注入槽（辅助注入失效不再沉默）
-    try:
-        from novel_system.db.models import SceneBundle as _SceneBundle
-
-        latest_bundle = (
-            session.execute(
-                select(_SceneBundle)
-                .where(_SceneBundle.scene_id == scene_id)
-                .order_by(_SceneBundle.created_at.desc(), _SceneBundle.bundle_id.desc())
-            )
-            .scalars()
-            .first()
-        )
-        signals["degraded_slots"] = (
-            (latest_bundle.frozen_snapshot_json or {}).get("degraded_slots") or []
-            if latest_bundle is not None
-            else []
-        )
-    except Exception as exc:
-        degrade_signal("degraded_slots", exc)
-
-    # Wave 6（§5.8/§10）：场景成本——总成本 / 各阶段占比 / 是否超预算（编排信号一读可解释）
-    try:
-        from novel_system.services.cost_aggregation import scene_cost
-
-        sc = scene_cost(session, scene_id)
-        signals["cost"] = {
-            "total_cost": sc["total_cost"],
-            "currency": sc["currency"],
-            "is_estimate": sc["is_estimate"],
-            "total_tokens": sc["total_tokens"],
-            "cross_provider": sc["cross_provider"],
-            "phase_breakdown": {
-                ph: {"cost": v["cost"], "share": v["share"]}
-                for ph, v in sc["phase_breakdown"].items()
-            },
-            "over_budget": sc["budget"]["over_budget"],
-            "usage_ratio": sc["budget"]["usage_ratio"],
-            "extra_cost": sc["extra_cost"],
-        }
-    except Exception as exc:
-        degrade_signal("cost", exc)
-
-    # Wave 6（§5.7）：裁判独立性——critic 是否与 writer 同源（correlated_judge）
-    try:
-        from novel_system.services.model_independence import (
-            judge_independence,
-            observed_correlated_judge,
-        )
-
-        observed = observed_correlated_judge(session, scene_id)
-        signals["judge_independence"] = (
-            observed if observed is not None else judge_independence(session)
-        )
-    except Exception as exc:
-        degrade_signal("judge_independence", exc)
-
-    # §5 foreshadow debt health (best-effort — never fail the whole panel)
-    try:
-        from novel_system.services.foreshadow_lifecycle import (
-            ForeshadowLifecycleService,
-        )
-
-        health = ForeshadowLifecycleService(session).project_health_report(project_id)
-        signals["foreshadow_health"] = {
-            "total_open": health.total_open,
-            "with_planned_reinforcement": health.with_planned_reinforcement,
-            "without_planned_reinforcement": health.without_planned_reinforcement,
-            "overdue_count": len(health.overdue),
-            "overdue_ids": health.overdue,
-            "unresolved_plant_count": len(health.unresolved_plants),
-            "unresolved_plants": health.unresolved_plants,
-        }
-    except Exception as exc:
-        degrade_signal("foreshadow_health", exc)
-
-    # §12 theme expression budget
-    try:
-        from novel_system.services.theme_anchor import ThemeAnchorService
-
-        signals["theme_budget"] = ThemeAnchorService(session).check_expression_budget(
-            project_id
-        )
-    except Exception as exc:
-        degrade_signal("theme_budget", exc)
-
-    # §9 active style-drift correction for this chapter
-    try:
-        from novel_system.db.models import LongformStructureGuidance as _LSG
-
-        drift_rows = list(
-            session.execute(
-                select(_LSG).where(
-                    _LSG.scope_type.in_(("chapter", "global")),
-                    _LSG.scope_ref_id.in_((scene.chapter_id, "global")),
-                    _LSG.guidance_id.like("drift_%"),
-                    _LSG.status == "approved",
-                )
-            )
-            .scalars()
-            .all()
-        )
-        drift_dims: list[str] = []
-        for row in drift_rows:
-            rec = row.recommendation_json or {}
-            for d in rec.get("drift_dimensions") or []:
-                if isinstance(d, dict) and d.get("dimension"):
-                    drift_dims.append(d["dimension"])
-        signals["style_drift"] = {
-            "active": bool(drift_rows),
-            "drifted_dimensions": drift_dims,
-        }
-    except Exception as exc:
-        degrade_signal("style_drift", exc)
-
-    return ok(signals, req_id=getattr(request.state, "request_id", None))
-
-
 @router.post("/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select")
 def select_style_candidate(
     scene_id: str,
@@ -1338,7 +852,7 @@ def select_style_candidate(
     body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
 
     def _select(session: Session) -> dict[str, Any]:
-        from novel_system.services.versioning.shared import now_iso
+        from novel_system.db.models import utcnow as now_iso
         from novel_system.services.style_reference.style_feedback import (
             build_candidate_selection_feedback,
             normalize_preference_tags,
@@ -1518,71 +1032,6 @@ def select_style_candidate(
         path_template="/api/v1/scenes/{scene_id}/style-candidates/{row_id}/select",
         payload={"scene_id": scene_id, "row_id": row_id, **body},
         action=lambda: _select(session),
-    )
-
-
-@router.post("/api/v1/scenes/{scene_id}/style-candidates/reopen")
-def reopen_style_candidate_selection(
-    scene_id: str,
-    request: Request,
-    session: Session = Depends(get_session),
-    payload: StyleCandidateReopenRequest | None = Body(default=None),
-):
-    """Wave 3（§6.3）：显式重开终选——唯一允许变更选择的动作，留审计。"""
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    body = payload.model_dump(mode="json", exclude_unset=True) if payload else {}
-    reason = str(body.get("reason") or "").strip()
-
-    def _reopen(session: Session) -> dict[str, Any]:
-        from novel_system.services.versioning.shared import now_iso
-
-        AuthorLifecycleService(session).require_active_scene(scene_id)
-        gate = _latest_selection_gate_event(session, scene_id)
-        if gate is None:
-            raise DomainError(
-                "SELECTION_GATE_NOT_FOUND",
-                "no terminal-selection gate exists for this scene",
-                status_code=409,
-                details={"scene_id": scene_id},
-            )
-        details = dict(gate.details_json or {})
-        if details.get("decision_status") != "selected":
-            return {
-                "scene_id": scene_id,
-                "decision_status": details.get("decision_status"),
-                "message": "selection is not locked",
-            }
-        history = list(details.get("decision_history") or [])
-        history.append(
-            {
-                "action": "reopen",
-                "previous_row_id": details.get("selected_row_id"),
-                "actor_ref": actor_ref,
-                "reason": reason,
-                "at": now_iso(),
-            }
-        )
-        gate.details_json = {
-            **details,
-            "decision_status": "reopened",
-            "selected_row_id": None,
-            "decision_history": history,
-        }
-        gate.status = "awaiting_review"
-        session.flush()
-        return {
-            "scene_id": scene_id,
-            "decision_status": "reopened",
-            "event_id": gate.event_id,
-        }
-
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/scenes/{scene_id}/style-candidates/reopen",
-        payload={"scene_id": scene_id, "reason": reason},
-        action=lambda: _reopen(session),
     )
 
 
@@ -2146,8 +1595,7 @@ def scene_workbench(
     scene = AuthorLifecycleService(session).require_active_scene(scene_id)
     chapter = session.get(ChapterGoal, scene.chapter_id)
     state = session.get(SceneRunState, scene_id)
-    runtime_service = ChapterRuntimeService(session)
-    chapter_state = runtime_service.chapter_state_snapshot(scene.chapter_id)
+    chapter_state = chapter_state_snapshot(session, scene.chapter_id)
     run_preflight = SceneRunPreflightService(session).build(scene, chapter_state)
     bundle = (
         session.get(SceneBundle, state.current_bundle_id)
@@ -2278,9 +1726,6 @@ def scene_workbench(
                 if state is not None
                 else None
             ),
-            "triage_preview": SceneTriageService(session).evaluate(
-                scene_id, actor_ref="preview", mutate=False
-            ),
             "rewrite_counters": {
                 "hard_partial_rewrite_count": (
                     state.hard_partial_rewrite_count if state is not None else 0
@@ -2351,9 +1796,6 @@ def _serialize_generation_summary(
         "error_code": llm_call.error_code,
         "created_at": llm_call.created_at,
     }
-    style_summary = _style_score_summary_for_scene(session, scene_id, state)
-    if style_summary is not None:
-        summary["style_score_summary"] = style_summary
     return summary
 
 
@@ -2492,22 +1934,6 @@ def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | Non
             or (latest_evaluation is not None and latest_evaluation.findings_json)
         )
     )
-    from novel_system.services.model_independence import (
-        judge_independence,
-        observed_correlated_judge,
-    )
-
-    stored_contract_refs = (
-        latest_evaluation.contract_field_refs_json
-        if latest_evaluation is not None
-        and isinstance(latest_evaluation.contract_field_refs_json, dict)
-        else {}
-    )
-    independence_evidence = stored_contract_refs.get("_model_independence")
-    if not isinstance(independence_evidence, dict):
-        independence_evidence = observed_correlated_judge(session, scene_id)
-    if independence_evidence is None:
-        independence_evidence = judge_independence(session)
     return {
         "rubric_id": NEAR_FINAL_RUBRIC_ID,
         "near_final_status": near_final_status,
@@ -2559,7 +1985,6 @@ def _serialize_near_final_summary(session: Session, scene_id: str) -> dict | Non
             "literary_warnings_unresolved": literary_warnings_unresolved,
             "author_confirmed_final": author_confirmed_final,
         },
-        "judge_independence": independence_evidence,
         "findings": (
             latest_evaluation.findings_json if latest_evaluation is not None else []
         ),
@@ -2688,21 +2113,7 @@ def _serialize_qc_summary(report: QcReport | None) -> dict | None:
     evidence_spans = _extract_evidence_spans(report.issues_json or [])
     if evidence_spans:
         summary["evidence_spans"] = evidence_spans
-    style_summary = StyleScoreService.summary_from_rewrite_brief(
-        report.rewrite_brief_json or []
-    )
-    if style_summary is not None:
-        summary.update(style_summary)
     return summary
-
-
-def _style_score_summary_for_scene(
-    session: Session, scene_id: str, state: SceneRunState
-) -> dict[str, Any] | None:
-    report = _latest_qc_report(session, scene_id, state, "soft_qc")
-    if report is None:
-        return None
-    return StyleScoreService.summary_from_rewrite_brief(report.rewrite_brief_json or [])
 
 
 def _extract_issue_keys(entries: list[dict]) -> list[str]:

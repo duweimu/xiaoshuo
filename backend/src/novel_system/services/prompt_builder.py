@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
@@ -34,10 +35,55 @@ class PromptTemplate:
 
 
 SUPPORTED_SCHEMA_TYPES = {"object", "array", "string", "number", "integer", "boolean", "null"}
+
+# ── 场景 / 规划 / 章节三族的输入预算下限（量出来的，不是猜的）──
+#
+# 这些数字与 config/prompts.yaml 里对应模板的 input_token_budget 相同；代码侧再保
+# 一份下限，是因为「库里有活动 prompts 快照时仓库文件不会被读」——已经在 系统配置
+# 里保存过 prompts 的实装，快照里仍是估算器改成「一个汉字一 token」之前的旧值
+# （1800–3600），不加这道地板，场景跑到 near_final_acceptance_review 就会以
+# CONTINUITY_BUDGET_EXCEEDED fail-closed，900 字的稿子都过不去。
+#
+# 实测方法：用 backend/tests 夹具（seed_runtime_fixture + BundleBuilder）搭真实
+# bundle，按各调用点的拼装函数拼出**最终** user prompt（基础 prompt + 稿件 + 调用点
+# 追加的指令），再用 context_budget.estimate_tokens 估算 system+user。载荷：3000 字
+# 中文场景稿、6 场共 15000 字的章节稿。三档 bundle：夹具原样 / 中等（蓝图、规划、
+# 风格画像、作者偏好、记忆摘要等约半数槽位有中文材料）/ 全开（SECTION_SPECS 每个
+# 槽位都有材料）。
+#
+#   场景族（bundle + 至多一份场景稿）    夹具 4.7k–6.7k  中等 11.3k–13.3k  全开 16.0k–18.1k
+#   规划族（规划源快照，不带稿件）       12 场章 + 章架构 + 场景蓝图 4.3k
+#   局部改写（writer_passage_patch）     摘录 + 1200/1400 字截断上下文 3.6k
+#   章节族（整章正文 + 1600 字截断摘要）  15000 字章 17.3k–19.4k
+#
+# 取值：场景族 24000（中等 ×1.8、全开 ×1.33，与雪花族同一个数，产品里「一场规模」的
+# 调用只有一条上限）；规划族与局部改写 8000（4.3k ×1.85）；章节族 30000（19.4k ×1.55，
+# 覆盖到约 25000 字的章）。同族载荷成分相同，所以同族同值。
+# 要为小上下文的本地模型收紧，用 NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET 覆盖整个
+# 三族（见 _scene_input_token_budget_override），无须改这里。
+SCENE_INPUT_TOKEN_BUDGET = 24000
+PLANNING_INPUT_TOKEN_BUDGET = 8000
+CHAPTER_INPUT_TOKEN_BUDGET = 30000
+SCENE_INPUT_TOKEN_BUDGET_ENV = "NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET"
 RUNTIME_MIN_INPUT_BUDGETS = {
-    "hard_qc": 3600,
-    "soft_qc": 3600,
-    "style_draft": 4200,
+    # 场景族
+    "neutral_draft": SCENE_INPUT_TOKEN_BUDGET,
+    "style_draft": SCENE_INPUT_TOKEN_BUDGET,
+    "scene_literary_rewrite": SCENE_INPUT_TOKEN_BUDGET,
+    "style_length_patch": SCENE_INPUT_TOKEN_BUDGET,
+    "style_salvage_patch": SCENE_INPUT_TOKEN_BUDGET,
+    "hard_qc": SCENE_INPUT_TOKEN_BUDGET,
+    "soft_qc": SCENE_INPUT_TOKEN_BUDGET,
+    "near_final_acceptance_review": SCENE_INPUT_TOKEN_BUDGET,
+    # 规划族 + 局部改写（载荷有界）
+    "scene_blueprint": PLANNING_INPUT_TOKEN_BUDGET,
+    "chapter_story_architecture": PLANNING_INPUT_TOKEN_BUDGET,
+    "character_pressure_blueprint": PLANNING_INPUT_TOKEN_BUDGET,
+    "writer_passage_patch": PLANNING_INPUT_TOKEN_BUDGET,
+    # 章节族（author_* 两个模板同时服务场景稿与整章稿，按最大者归章节族）
+    "chapter_near_final_review": CHAPTER_INPUT_TOKEN_BUDGET,
+    "writer_deep_review": CHAPTER_INPUT_TOKEN_BUDGET,
+    "author_proposal_generate": CHAPTER_INPUT_TOKEN_BUDGET,
 }
 CHARACTER_CONTINUITY_INSTRUCTION = (
     "Preserve character identity and pronoun continuity across the scene. "
@@ -96,7 +142,7 @@ class PromptBuilder:
         task_prompt = _append_schema_instruction(task_prompt, structured_schema)
         target_input_tokens = max_input_tokens
         if target_input_tokens is None:
-            target_input_tokens = max(template.input_token_budget, RUNTIME_MIN_INPUT_BUDGETS.get(template.name, 0))
+            target_input_tokens = _default_input_token_budget(template)
         context_budget = apply_context_budget(
             system_prompt=template.system_prompt,
             task_prompt=task_prompt,
@@ -154,6 +200,38 @@ def load_prompt_templates(path: str | Path | None = None) -> dict[str, PromptTem
         except yaml.YAMLError as exc:
             raise PromptConfigurationError("prompts config could not be parsed") from exc
     return parse_prompt_templates(raw_payload)
+
+
+def _default_input_token_budget(template: PromptTemplate) -> int:
+    floor = RUNTIME_MIN_INPUT_BUDGETS.get(template.name)
+    if floor is None:
+        return template.input_token_budget
+    override = _scene_input_token_budget_override()
+    if override > 0:
+        # 作者为小上下文模型显式收紧：同时覆盖模板值与代码地板——否则地板会把
+        # 收紧顶回去，环境变量就成了摆设。
+        return override
+    return max(template.input_token_budget, floor)
+
+
+def _scene_input_token_budget_override() -> int:
+    """NOVEL_SYSTEM_SCENE_INPUT_TOKEN_BUDGET：未设/0 = 模板值与地板取大；正数 = 三族统一上限。
+
+    语义与 settings._get_quota_int_env 相同（非负整数，0 关闭）。直接读环境变量而不
+    走 get_settings()，是因为这个旋钮只属于提示词装配层，且 PromptBuilder 在请求期被
+    反复构造；非法值在这里就报配置错误，而不是留到运行时变成一次莫名其妙的超限。
+    """
+    raw_value = os.environ.get(SCENE_INPUT_TOKEN_BUDGET_ENV)
+    if raw_value is None or not raw_value.strip():
+        return 0
+    message = f"{SCENE_INPUT_TOKEN_BUDGET_ENV} must be a non-negative integer (0 uses the template budgets)"
+    try:
+        value = int(raw_value.strip())
+    except ValueError as exc:
+        raise PromptConfigurationError(message) from exc
+    if value < 0:
+        raise PromptConfigurationError(message)
+    return value
 
 
 def _task_kind_for_template(template_name: str) -> str:

@@ -34,7 +34,6 @@ def _auto_online_writer(monkeypatch):
     _install_online_writer_pipeline(monkeypatch)
 
 
-
 CHAPTER_ID = "DEEP_CH01"
 SCENE_ID = "DEEP_CH01_SC01"
 FINAL_ROW_ID = "final_DEEP_CH01_SC01"
@@ -371,62 +370,6 @@ def test_rejecting_passage_patch_updates_candidate_but_keeps_preference_unpublis
     profile = client.get("/api/v1/author-preference-profile").json()["data"]["profile"]
     assert profile["runtime_eligible"] is False
     assert any("保留" in item for item in profile["summary"]["rejected_revision_moves"])
-
-
-def test_author_preference_review_approval_publishes_runtime_profile(client: TestClient, session) -> None:
-    _seed_finished_scene(session)
-    candidate = client.post(
-        "/api/v1/passages/patch-candidates",
-        json={
-            "object_type": "scene",
-            "object_id": SCENE_ID,
-            "chapter_id": CHAPTER_ID,
-            "scene_id": SCENE_ID,
-            "target_text_ref": f"final_scene:{FINAL_ROW_ID}",
-            "source_excerpt": "original explanation sentence",
-            "issue_dimension": "dialogue_subtext",
-        },
-    ).json()["data"]["candidate"]
-    client.post(
-        f"/api/v1/passage-patch-candidates/{candidate['patch_id']}/accept",
-        json={"selected_option_id": candidate["replacement_options"][0]["option_id"], "note": "prefer action"},
-    )
-
-    review = session.get(ReviewItem, "review_author_pref_global_global")
-    assert review is not None
-    assert review.item_type == "author_preference_profile"
-    assert review.target_collection == "author_preference_profiles"
-    assert review.status == "pending"
-    assert review.candidate_payload_json["profile_id"] == "author_pref_global_global"
-
-    approval = client.post(
-        f"/api/v1/review-items/{review.review_id}/approve",
-        headers={"X-Idempotency-Key": "approve-author-preference-profile"},
-    )
-
-    assert approval.status_code == 200, approval.text
-    assert approval.json()["data"]["released"] is True
-    profile = client.get("/api/v1/author-preference-profile").json()["data"]["profile"]
-    assert profile["status"] == "approved"
-    assert profile["runtime_eligible"] is True
-    assert profile["summary"]["preferred_revision_moves"]
-
-    draft = AuthorDraftService(session).ensure("scene", SCENE_ID, actor_ref="writer")["draft"]
-    llm_client = ScriptedPassagePatchClient()
-    WriterDeepReviewService(session, llm_client=llm_client).create_patch_candidate(
-        {
-            "object_type": "scene",
-            "object_id": SCENE_ID,
-            "chapter_id": CHAPTER_ID,
-            "scene_id": SCENE_ID,
-            "target_text_ref": f"author_draft:{draft['draft_id']}",
-            "source_draft_id": draft["draft_id"],
-            "source_excerpt": "second passage",
-            "issue_dimension": "repetitive_expression",
-        },
-        actor_ref="writer",
-    )
-    assert profile["summary"]["preferred_revision_moves"][0] in llm_client.requests[0].messages[1]["content"]
 
 
 class ScriptedPassagePatchClient(OnlineAccountedExecution):

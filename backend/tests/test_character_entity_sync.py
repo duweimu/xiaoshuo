@@ -49,21 +49,14 @@ def _create_project(client) -> dict:
     return response.json()["data"]["project"]
 
 
-def _approve_step(client, project_id: str, step_key: str) -> dict:
-    gen = client.post(
-        f"/api/v1/projects/{project_id}/snowflake/steps/{step_key}/generate",
-        json={},
-        headers={"X-Idempotency-Key": f"gen-{project_id}-{step_key}"},
-    )
-    assert gen.status_code == 200, gen.text
-    artifact = gen.json()["data"]["artifact"]
-    approve = client.post(
-        f"/api/v1/projects/{project_id}/snowflake/artifacts/{artifact['artifact_id']}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"approve-{artifact['artifact_id']}"},
-    )
-    assert approve.status_code == 200, approve.text
-    return approve.json()["data"]["artifact"]
+def _approve_step(session, project_id: str, step_key: str) -> dict:
+    from novel_system.services.snowflake_planner import SnowflakePlannerService
+
+    planner = SnowflakePlannerService(session)
+    artifact = planner.generate(project_id, step_key, {})["artifact"]
+    approved = planner.approve(project_id, artifact["artifact_id"])["artifact"]
+    session.commit()
+    return approved
 
 
 # --------------------------------------------------------------------------- #
@@ -81,7 +74,7 @@ def test_character_synopses_syncs_to_entity(client, session) -> None:
         "short_synopsis",
         "character_synopses",
     ]:
-        _approve_step(client, project_id, step_key)
+        _approve_step(session, project_id, step_key)
 
     rows = session.execute(
         select(StoryCharacter).where(StoryCharacter.project_id == project_id)

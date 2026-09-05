@@ -1075,9 +1075,6 @@ function Draft({ scene, activeBeat, setActiveBeat, typing }) {
 
 function Preflight({ scene }) {
   const briefBeats = (scene.brief || []).map(b => b.beat);
-  /* 长程约束：预检时读控制塔的交接契约（强约束层）。
-     若本场场景卡带 contract 指派（由塔下发时逐场分解），优先展示指派项 */
-  const longRange = null;
   const checks = scene.fromCard
     ? [
         { ok: briefBeats.includes("goal"),     text: "场景卡 · 目标已填" },
@@ -1091,7 +1088,6 @@ function Preflight({ scene }) {
         { ok: true,  text: "上一场出口已对齐入口" },
         { ok: false, text: "参考画像未绑定 · 可选" },
       ];
-  if (longRange) checks.unshift({ ok: true, text: `控制塔交接契约已注入 · ${longRange.enforce.length} 条强约束随身在场` });
   return (
     <div className="scn2-pre scn2-scroll">
       <div className="scn2-pre-card">
@@ -1120,24 +1116,6 @@ function Preflight({ scene }) {
             ))}
           </ul>
         </div>
-        {longRange && (
-          <div className="scn2-pre-brief">
-            <div className="scn2-pre-eyebrow"><I.Radar size={14} /> 长程约束 · {longRange.assigned ? "本场指派（控制塔契约）" : "来自控制塔交接契约"}</div>
-            <ul className="scn2-brief-list">
-              {(longRange.assigned || longRange.enforce.slice(0, 4)).map((it) => (
-                <li key={it.id}>
-                  <span className={`scn2-brief-tag tone-${it.tone === "rose" ? "crimson" : (it.tone === "crimson" || it.tone === "gold" || it.tone === "sage" || it.tone === "slate") ? it.tone : "slate"}`}>{it.label}</span>
-                  <span className="scn2-brief-text">{it.text}</span>
-                </li>
-              ))}
-            </ul>
-            <p style={{ margin: "10px 0 0", fontSize: 12, color: "var(--ink-3)" }}>
-              {longRange.assigned
-                ? `本场指派 ${longRange.assigned.length} 条；另有 ${Math.max(0, longRange.enforce.length - longRange.assigned.filter(it => it.mode === "enforce").length)} 条全章强约束随预检在场 —— 起草与质检都会逐条比对。`
-                : `${longRange.enforce.length > 4 ? `另有 ${longRange.enforce.length - 4} 条强约束已随预检注入 · ` : ""}这些是全书层面不许漂移的设定与承诺，起草与质检都会逐条比对 —— 详见长篇控制塔。`}
-            </p>
-          </div>
-        )}
       </div>
     </div>
   );

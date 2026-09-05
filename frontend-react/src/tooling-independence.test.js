@@ -47,14 +47,6 @@ describe("React 工具链独立性", () => {
     }
   });
 
-  it("仓库级浏览器 QA 不依赖旧 Vue 包的 node_modules", () => {
-    for (const name of ["run-currentdb-three-chapter-qa.cjs", "run-longzu-full-cloud-qa.cjs"]) {
-      const source = fs.readFileSync(path.join(repoRoot, "scripts", name), "utf8");
-      expect(source, name).toContain('../frontend-react/node_modules/playwright');
-      expect(source, name).not.toContain('../frontend/node_modules/playwright');
-    }
-  });
-
   it("QA2 uses the live project-list contract to discover its single-chapter fixture", () => {
     const source = fs.readFileSync(path.join(scriptsDir, "qa2-ui.mjs"), "utf8");
     expect(source).toContain("${API}/api/v1/projects");
@@ -98,7 +90,7 @@ describe("React 工具链独立性", () => {
   it("新的 ESM-only 模块不再写入 window 全局命名空间", () => {
     const esmOnly = [
       "icons.jsx", "tweaks-panel.jsx", "ws-ai-providers.jsx", "ws-chapter-plan.jsx",
-      "ws-cost.jsx", "ws-deep.jsx", "ws-eval.jsx", "ws-home.jsx", "ws-ops.jsx",
+      "ws-cost.jsx", "ws-deep.jsx", "ws-home.jsx",
       "ws-palette.jsx", "ws-quality.jsx", "ws-settings.jsx", "ws-settings-ai.jsx",
       "ws-settings-shared.jsx", "ws-styleref-val.jsx", "ws-scene-run.jsx",
       "ws-author-data.jsx", "ws-author-doctor.jsx", "ws-author-loom.jsx",

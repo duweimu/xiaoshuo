@@ -47,12 +47,10 @@ def _auto_online_author(monkeypatch):
     _install_online_author_pipeline(monkeypatch)
 
 
-
 @_pytest_sk.fixture(autouse=True)
 def _auto_skeleton_snowflake(monkeypatch):
     """假生成已退役：雪花 generate_step 走规划器骨架直通（仅回归物化/失效/收口链路）。"""
     _install_skeleton_snowflake(monkeypatch)
-
 
 
 def _patch_accounted_generate(monkeypatch, generate):
@@ -351,73 +349,6 @@ def test_workspace_v2_required_steps_are_not_skippable_even_with_reason(client) 
 
     assert skip_response.status_code == 400
     assert skip_response.json()["error"]["code"] == "SNOWFLAKE_STEP_NOT_SKIPPABLE"
-
-
-def test_discovery_draft_extracts_project_structure_into_pending_snowflake_steps(client, session) -> None:
-    project = _create_project(client, key="discovery-draft")
-
-    ensure_response = client.post(f"/api/v1/projects/{project['project_id']}/discovery-draft/ensure")
-
-    assert ensure_response.status_code == 200, ensure_response.text
-    draft = ensure_response.json()["data"]["draft"]
-    assert draft["object_type"] == "project"
-    assert draft["object_id"] == project["project_id"]
-    assert draft["source_text_ref"] == f"project_discovery:{project['project_id']}:blank"
-    assert draft["content"] == ""
-
-    saved_response = client.patch(
-        f"/api/v1/author-drafts/{draft['draft_id']}",
-        json={
-            "content": (
-                "Audience: mystery readers who want emotional cost.\n"
-                "One sentence: A cartographer exposes a buried railway crime and risks her family.\n"
-                "Scenes:\n"
-                "1. She finds a sealed map in the station wall.\n"
-                "2. She trades the map for a witness's safety."
-            ),
-            "base_revision_no": draft["revision_no"],
-        },
-    )
-    assert saved_response.status_code == 200
-    draft = saved_response.json()["data"]["draft"]
-
-    extract_response = client.post(f"/api/v1/author-drafts/{draft['draft_id']}/structure-extract")
-
-    assert extract_response.status_code == 200, extract_response.text
-    candidate = extract_response.json()["data"]["candidate"]
-    assert candidate["object_type"] == "project"
-    assert set(candidate["candidate_brief"]["snowflake_steps"]) >= {
-        "book_brief",
-        "one_sentence_summary",
-        "one_paragraph_summary",
-        "scene_list",
-        "scene_details",
-    }
-
-    apply_response = client.post(
-        f"/api/v1/author-structure-candidates/{candidate['candidate_id']}/apply-to-snowflake"
-    )
-
-    assert apply_response.status_code == 200, apply_response.text
-    applied = apply_response.json()["data"]
-    assert applied["candidate"]["status"] == "accepted"
-    assert sorted(applied["imported_step_keys"]) == [
-        "book_brief",
-        "one_paragraph_summary",
-        "one_sentence_summary",
-        "scene_details",
-        "scene_list",
-    ]
-    session.expire_all()
-    assert session.get(AuthorDraft, draft["draft_id"]).object_type == "project"
-    runs = (
-        session.query(SnowflakeStepRun)
-        .filter(SnowflakeStepRun.project_id == project["project_id"])
-        .order_by(SnowflakeStepRun.step_key.asc())
-        .all()
-    )
-    assert {run.step_key for run in runs} >= set(applied["imported_step_keys"])
-    assert all(run.status == "pending_review" for run in runs)
 
 
 def test_workspace_v2_step_history_and_restore_keep_author_approval_gate(client, session) -> None:

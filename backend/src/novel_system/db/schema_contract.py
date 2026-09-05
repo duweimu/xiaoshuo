@@ -3,4 +3,4 @@
 from __future__ import annotations
 
 
-CURRENT_SCHEMA_REVISION = "20260818_0082"
+CURRENT_SCHEMA_REVISION = "20260904_0083"

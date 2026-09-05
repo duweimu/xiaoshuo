@@ -60,29 +60,22 @@ CHAPTER_ID = "CH300"
 
 
 @pytest.fixture(autouse=True)
-def _qualified_quality_evidence_for_candidate_gate_tests(monkeypatch) -> None:
-    """Candidate-gate mechanics run under an explicitly pre-authorized cell.
+def _multi_candidate_authorization_for_candidate_gate_tests(monkeypatch) -> None:
+    """Candidate-gate mechanics run with three authorized candidates.
 
-    Governance/default-off behavior is covered in test_quality_evidence_stage2;
-    these tests exercise the downstream multi-candidate selection state machine.
+    Production always drafts a single candidate; these tests exercise the
+    downstream multi-candidate selection state machine.
     """
 
-    from novel_system.services.literary_quality import DIMENSION_WEIGHTS
-    from novel_system.services.quality_strategy import QualityStrategyResolver
+    from novel_system.services.orchestrator import Orchestrator
 
-    monkeypatch.setattr(
-        QualityStrategyResolver,
-        "resolve_for_scene",
-        lambda _self, _scene: SimpleNamespace(
-            best_of_n_enabled=True,
-            best_of_n_n=3,
-            genre="悬疑",
-            scene_function="advance",
-            blockers=(),
-            matched_policy_id="test:qualified-human-evidence",
-            weights=dict(DIMENSION_WEIGHTS),
-        ),
-    )
+    def _three_candidates(self, contract, *, criticality=None):
+        self._best_of_n_policy_cap = 3
+        if criticality is not None:
+            return max(1, min(3, int(criticality.initial_best_of_n)))
+        return 3
+
+    monkeypatch.setattr(Orchestrator, "_best_of_n_count", _three_candidates)
 
 
 def _response(payload: dict, *, request_id: str) -> LLMResponse:
@@ -452,62 +445,6 @@ def test_blinded_candidates_view_strips_scores_and_uses_blinded_order(
 
 
 # ---------- 终选锁定与重开 ----------
-
-
-def test_select_locks_and_reopen_allows_change(client, session) -> None:
-    _seed_scene(session)
-    row_ids = ["w3_cand_a", "w3_cand_b", "w3_cand_c"]
-    _seed_manual_gate(session, row_ids, list(reversed(row_ids)))
-
-    first = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/w3_cand_a/select",
-        json={"no_clear_difference": False},
-        headers={"X-Idempotency-Key": "w3-select-1"},
-    )
-    assert first.status_code == 200
-
-    # 相同选择重复提交（不同幂等键）→ 幂等返回
-    same = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/w3_cand_a/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-1b"},
-    )
-    assert same.status_code == 200
-
-    # 提交不同 row_id → 拒绝（终选一次写入）
-    other = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/w3_cand_b/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-2"},
-    )
-    assert other.status_code == 409
-    assert other.json()["error"]["code"] == "SELECTION_LOCKED"
-
-    # 显式重开 → 可改选，且审计留痕
-    reopen = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/reopen",
-        json={"reason": "想再看一遍第二稿"},
-        headers={"X-Idempotency-Key": "w3-reopen-1"},
-    )
-    assert reopen.status_code == 200
-
-    retry = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/style-candidates/w3_cand_b/select",
-        json={},
-        headers={"X-Idempotency-Key": "w3-select-3"},
-    )
-    assert retry.status_code == 200
-
-    gate = _selection_gate(session)
-    session.refresh(gate)
-    details = gate.details_json
-    assert details["selected_row_id"] == "w3_cand_b"
-    history = details.get("decision_history") or []
-    assert any(entry.get("action") == "reopen" for entry in history)
-    assert any(
-        entry.get("action") == "select" and entry.get("row_id") == "w3_cand_a"
-        for entry in history
-    )
 
 
 def test_select_outside_gate_candidates_rejected(client, session) -> None:

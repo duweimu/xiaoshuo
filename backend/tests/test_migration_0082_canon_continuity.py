@@ -11,11 +11,10 @@ from alembic.config import Config
 from sqlalchemy import create_engine
 
 from novel_system.db.models import Base
-from novel_system.tools.database_preflight import inspect_database
 
 
 PREVIOUS_HEAD = "20260805_0081"
-CURRENT_HEAD = "20260818_0082"
+CURRENT_HEAD = "20260904_0083"
 
 
 def _migration_module():
@@ -146,8 +145,6 @@ def test_0082_backfills_legacy_authority_fail_closed_and_downgrades_cleanly(
             "realized_scene_id",
         } <= timeline_columns
 
-    preflight = inspect_database(path, "0082")
-    assert preflight["ready"] is True, preflight
 
     _migrate(
         path,

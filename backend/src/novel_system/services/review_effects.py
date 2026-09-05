@@ -7,7 +7,6 @@ resolve 端点在同一事务里执行 effect 并把卡置 resolved；未知 typ
 - insert_scene       复用 CatalogService.create_scene（P3）
 - rename_chapter     复用 CatalogService.update_chapter
 - bind_style_profile 复用 style_reference MaterializationService.apply_profile
-- rule_canon         P7 控制塔桥接通时注册（adjudicate 同一服务）
 - create_entity / add_timeline_event  P6 资料库接通时注册
 """
 
@@ -197,31 +196,8 @@ def _add_timeline_event(
     )
 
 
-def _rule_canon(
-    session: Session, project_id: str, payload: dict[str, Any]
-) -> dict[str, Any]:
-    """P7 链路①：设定裁决 —— 与塔的 adjudicate 同一服务函数（同源单一状态）。"""
-    from novel_system.services.longform_adjudication import adjudicate_finding
-
-    finding_id = str(payload.get("finding_id") or "").strip()
-    if not finding_id:
-        raise DomainError(
-            "REVIEW_EFFECT_INVALID", "rule_canon requires finding_id", status_code=400
-        )
-    return adjudicate_finding(
-        session,
-        project_id,
-        finding_id,
-        {
-            "decision": str(payload.get("decision") or "accept_fix"),
-            "note": str(payload.get("value") or payload.get("note") or ""),
-        },
-    )
-
-
 register_effect("insert_scene", _insert_scene)
 register_effect("rename_chapter", _rename_chapter)
 register_effect("bind_style_profile", _bind_style_profile)
 register_effect("create_entity", _create_entity)
 register_effect("add_timeline_event", _add_timeline_event)
-register_effect("rule_canon", _rule_canon)

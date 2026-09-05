@@ -74,33 +74,4 @@ Linux 恢复演练入口为 `bash scripts/db_backup_drill.sh`。两个演练脚�
 
 ## 历史 LLM 审计载荷脱敏
 
-`LlmCall`、`LlmCallAttempt` 与幂等 `OperationLog` 是计费、追踪和故障恢复账本，不应成为第二份小说正文仓库。新写入只保留哈希、长度、消息角色、受限协议字段及有界结构摘要；0073 迁移会把旧记录中的完整提示词、作者草稿、模型输出和供应商错误正文改写为同类摘要。
-
-在 `backend` 目录和项目虚拟环境中，先停掉应用写入并执行只读预演：
-
-```bash
-python -m novel_system.tools.llm_audit_scrub \
-  --database ./novel_system.db \
-  --dry-run
-```
-
-输出仅包含各表的 `scanned`、`would_change`、`changed` 统计，不输出被扫描的正文。`--dry-run` 不执行 `UPDATE`，也不提交事务，因此 `changed` 始终为 `0`。确认统计后，先创建并验证一致性备份，再显式执行：
-
-```bash
-python -m novel_system.tools.db_backup \
-  --backup ./novel_system.db ./backups/novel_system-before-llm-audit-scrub.db
-
-python -m novel_system.tools.llm_audit_scrub \
-  --database ./novel_system.db \
-  --execute \
-  --batch-size 500
-```
-
-执行模式按批提交；中途失败时，已提交批次不会回滚，可在排除故障后安全重跑。完成后再次执行 `--dry-run`，预期 `would_change=0`。运维工具要求数据库文件已存在，且 `--dry-run` 与 `--execute` 必须二选一，以防默认进入破坏性模式。
-
-不可逆边界如下：
-
-- 脱敏会永久删除审计副本中的原始正文和错误正文；哈希只能用于一致性核对，不能恢复内容。
-- 0073 的 Alembic `downgrade` 不会重建已删除的文本；迁移使用固化在版本文件中的 v2 规则，并在 Alembic 管理的迁移事务内执行。
-- 工具不删除作品、章节、作者恢复草稿或 LLM 计费账本行，也不改写 `IdempotencyKey.response_json`；后者是精确幂等回放的权威值，不是诊断副本。
-- `OperationLog` 仅保留恢复所需的 `review_id` / `job_id`，以及有界的人工风险确认理由。运行清理时应使用维护窗口，避免和仍在写旧格式日志的进程并发。
+`LlmCall`、`LlmCallAttempt` 与幂等 `OperationLog` 是计费、追踪和故障恢复账本，不应成为第二份小说正文仓库。新写入只保留哈希、长度、消息角色、受限协议字段及有界结构摘要；0073 迁移会把旧记录中的完整提示词、作者草稿、模型输出和供应商错误正文改写为同类摘要。该迁移不可逆，升级前先按上节完成可验证备份。

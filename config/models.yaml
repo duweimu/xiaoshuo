@@ -14,12 +14,6 @@ model_profiles:
 
 task_routing:
   # FE-ALIGN P6: 资料库半自动派生（归档正文 → 候选实体/时间线事件）
-  library_derive:
-    provider: openai_compatible
-    model: gpt-5-mini
-    temperature: 0.1
-    max_output_tokens: 1600
-    response_format: json_object
   # FE-ALIGN G5: 构思视图步骤候选（3 条不同方向）
   snowflake_step_candidates:
     provider: openai_compatible
@@ -150,29 +144,11 @@ task_routing:
     response_format: json_object
     frequency_penalty: 0.3
     presence_penalty: 0.15
-  project_outline_plan:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.25
-    max_output_tokens: 3200
-    response_format: json_object
   writer_deep_review:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.15
     max_output_tokens: 3600
-    response_format: json_object
-  style_profile_extract:
-    provider: openai_compatible
-    model: gpt-5-mini
-    temperature: 0.15
-    max_output_tokens: 2200
-    response_format: json_object
-  literary_eval_live:
-    provider: openai_compatible
-    model: gpt-5-mini
-    temperature: 0.2
-    max_output_tokens: 2400
     response_format: json_object
   soft_qc:
     provider: openai_compatible
@@ -191,12 +167,6 @@ task_routing:
     model: gpt-5
     temperature: 0.4
     max_output_tokens: 4000
-    response_format: json_object
-  writer_scene_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 2200
     response_format: json_object
   scene_blueprint:
     provider: openai_compatible
@@ -223,13 +193,6 @@ task_routing:
     max_output_tokens: 6000
     response_format: json_object
     model_profile: quality_strong
-  scene_auto_rewrite:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.55
-    max_output_tokens: 5000
-    response_format: json_object
-    model_profile: quality_strong
   near_final_acceptance_review:
     provider: openai_compatible
     model: gpt-5
@@ -242,83 +205,11 @@ task_routing:
     temperature: 0.15
     max_output_tokens: 3200
     response_format: json_object
-  writer_scene_story_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 2200
-    response_format: json_object
-  writer_scene_character_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 2200
-    response_format: json_object
-  writer_scene_prose_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 2200
-    response_format: json_object
-  writer_scene_reader_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 2200
-    response_format: json_object
-  writer_scene_revision:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.5
-    max_output_tokens: 5000
-    response_format: json_object
-  writer_chapter_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 3200
-    response_format: json_object
-  writer_chapter_story_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 3200
-    response_format: json_object
-  writer_chapter_character_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 3200
-    response_format: json_object
-  writer_chapter_prose_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 3200
-    response_format: json_object
-  writer_chapter_reader_diagnosis:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.2
-    max_output_tokens: 3200
-    response_format: json_object
-  writer_chapter_revision:
-    provider: openai_compatible
-    model: gpt-5
-    temperature: 0.45
-    max_output_tokens: 4200
-    response_format: json_object
   writer_passage_patch:
     provider: openai_compatible
     model: gpt-5
     temperature: 0.45
     max_output_tokens: 2600
-    response_format: json_object
-  author_structure_extract:
-    provider: openai_compatible
-    model: gpt-5-mini
-    temperature: 0.2
-    max_output_tokens: 2200
     response_format: json_object
   author_proposal_generate:
     provider: openai_compatible

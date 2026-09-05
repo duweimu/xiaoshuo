@@ -314,9 +314,6 @@ def test_near_final_acceptance_blocks_scene_without_choice_cost_or_ending_action
     assert result["failure_class"] == "scene_structure_failure"
     assert evaluation.rubric_id == NEAR_FINAL_RUBRIC_ID
     assert evaluation.requires_human_review == 0
-    independence = evaluation.contract_field_refs_json["_model_independence"]
-    assert independence["basis"] in {"observed_calls", "config_routing"}
-    assert "comparisons" in independence or "role_evidence" in independence
     assert candidate.revision_type == "near_final_scene_rewrite"
     assert candidate.apply_mode == "manual_or_regenerate"
     assert "选择" in candidate.instruction_json[0]["action"]
@@ -503,9 +500,6 @@ def test_chapter_near_final_review_blocks_missing_payoff(session) -> None:
     assert result["failure_class"] == "chapter_payoff_gap"
     assert evaluation.rubric_id == NEAR_FINAL_RUBRIC_ID
     assert evaluation.findings_json[0]["dimension"] == "payoff_integrity"
-    independence = evaluation.contract_field_refs_json["_model_independence"]
-    assert independence["basis"] in {"observed_calls", "config_routing"}
-    assert "correlated_judge" in independence
     llm_call = session.get(LlmCall, evaluation.evaluator_llm_call_id)
     assert llm_call.scope_type == "chapter"
     assert llm_call.scope_id == CHAPTER_ID

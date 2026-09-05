@@ -11,12 +11,9 @@ from sqlalchemy.orm import Session
 from novel_system.contracts.bundle import BundleSnapshotHashProjection
 from novel_system.db.models import (
     AuthorPreferenceProfile,
-    ChapterContract,
     ChapterGoal,
     FinalScene,
     GenerationPlanningArtifact,
-    LongformAnchor,
-    LongformStructureGuidance,
     SceneBlueprint,
     SceneBundle,
     SceneCard,
@@ -26,7 +23,6 @@ from novel_system.db.models import (
     StoryCharacter,
     VolumeSummary,
 )
-from novel_system.db.models import StyleObservation
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import compute_bundle_hash_projection
 from novel_system.services.literary_quality import fingerprint_literary_quality
@@ -37,10 +33,6 @@ from novel_system.services.character_continuity import (
 )
 from novel_system.services.scene_digest import scene_card_digest
 from novel_system.services.scene_ownership import require_scene_project_id
-from novel_system.services.style_profile import (
-    STYLE_FEATURE_CONTRACT_VERSION,
-    StyleProfileService,
-)
 from novel_system.services.style_reference.injection import InjectionService
 from novel_system.services.style_reference.runtime_contract import (
     STYLE_RUNTIME_CONTRACT_VERSION,
@@ -425,34 +417,6 @@ class BundleBuilder:
         if info_asymmetry:
             inline_digests["information_asymmetry"] = info_asymmetry
 
-        pov_coloring = self._pov_voice_coloring(scene, voice_profile)
-        if pov_coloring:
-            inline_digests["pov_voice_coloring"] = pov_coloring
-
-        voice_fp = self._voice_fingerprint_prompt(scene)
-        if voice_fp:
-            inline_digests["voice_fingerprint"] = voice_fp
-
-        char_psych = self._character_psychology_prompt(scene)
-        if char_psych:
-            inline_digests["character_psychology"] = char_psych
-
-        arc_weights = self._character_arc_weights_prompt(scene)
-        if arc_weights:
-            inline_digests["character_arc_weights"] = arc_weights
-
-        rel_matrix = self._relationship_matrix_prompt(scene)
-        if rel_matrix:
-            inline_digests["relationship_matrix"] = rel_matrix
-
-        tension_prompt = self._tension_prompt(scene)
-        if tension_prompt:
-            inline_digests["tension_pacing"] = tension_prompt
-
-        theme_prompt = self._theme_and_expression_budget(scene)
-        if theme_prompt:
-            inline_digests["theme_expression_budget"] = theme_prompt
-
         chapter_transition = self._chapter_transition_buffer(scene)
         if chapter_transition:
             inline_digests["chapter_transition_buffer"] = chapter_transition
@@ -488,125 +452,6 @@ class BundleBuilder:
                 freshness_budget["budget"],
                 ensure_ascii=False,
                 sort_keys=True,
-            )
-
-        style_rules = self.resolver.resolve_active_style_rules(self.session, scene)
-        if style_rules:
-            style_rule_ids = [row.style_rule_set_id for row in style_rules]
-            source_version_refs["style_rule_set_id"] = self._single_or_list(
-                style_rule_ids
-            )
-            ordered_injections.append(
-                {
-                    "slot": "style_rules",
-                    "ref_id": style_rule_ids[0],
-                    "digest_key": "style_rule",
-                }
-            )
-            inline_digests["style_rule"] = self._combined_text(style_rules, "content")
-
-        style_observations = (
-            self.session.execute(
-                select(StyleObservation)
-                .where(
-                    StyleObservation.active_flag == 1,
-                    StyleObservation.runtime_eligible == 1,
-                    self.resolver._scoped_clause(StyleObservation, scene),
-                )
-                .order_by(
-                    StyleObservation.created_at.asc(), StyleObservation.row_id.asc()
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if style_observations:
-            style_observation_ids = [
-                row.style_observation_id for row in style_observations
-            ]
-            source_version_refs["style_observation_ids"] = style_observation_ids
-            ordered_injections.append(
-                {
-                    "slot": "style_observations",
-                    "ref_id": style_observation_ids[0],
-                    "digest_key": "style_observation",
-                }
-            )
-            inline_digests["style_observation"] = self._combined_text(
-                style_observations, "text"
-            )
-
-        banned_rule_clusters = self.resolver.resolve_active_banned_rule_clusters(
-            self.session, scene
-        )
-        if banned_rule_clusters:
-            banned_ids = [row.banned_cluster_id for row in banned_rule_clusters]
-            source_version_refs["banned_cluster_id"] = self._single_or_list(banned_ids)
-            ordered_injections.append(
-                {
-                    "slot": "banned_rules",
-                    "ref_id": banned_ids[0],
-                    "digest_key": "banned_rule",
-                }
-            )
-            inline_digests["banned_rule"] = self._combined_text(
-                banned_rule_clusters, "content"
-            )
-
-        narrative_patterns = self.resolver.resolve_active_narrative_patterns(
-            self.session, scene
-        )
-        if narrative_patterns:
-            narrative_ids = [row.narrative_pattern_id for row in narrative_patterns]
-            source_version_refs["narrative_pattern_ids"] = narrative_ids
-            ordered_injections.append(
-                {
-                    "slot": "narrative_patterns",
-                    "ref_id": narrative_ids[0],
-                    "digest_key": "narrative_pattern",
-                }
-            )
-            inline_digests["narrative_pattern"] = self._combined_text(
-                narrative_patterns, "content"
-            )
-
-        calibration_lines = self.resolver.resolve_active_calibration_lines(
-            self.session, scene
-        )
-        if calibration_lines:
-            calibration_ids = [row.calibration_line_id for row in calibration_lines]
-            source_version_refs["calibration_line_ids"] = calibration_ids
-            ordered_injections.append(
-                {
-                    "slot": "calibration_lines",
-                    "ref_id": calibration_ids[0],
-                    "digest_key": "calibration_line",
-                }
-            )
-            inline_digests["calibration_line"] = self._combined_text(
-                calibration_lines, "text"
-            )
-
-        style_profile = StyleProfileService.build_profile(
-            style_rules=style_rules,
-            style_observations=style_observations,
-            banned_rule_clusters=banned_rule_clusters,
-            calibration_lines=calibration_lines,
-            voice_profile=voice_profile,
-        )
-        if style_profile:
-            source_version_refs["style_profile_contract"] = (
-                STYLE_FEATURE_CONTRACT_VERSION
-            )
-            ordered_injections.append(
-                {
-                    "slot": "style_profile",
-                    "ref_id": STYLE_FEATURE_CONTRACT_VERSION,
-                    "digest_key": "style_profile",
-                }
-            )
-            inline_digests["style_profile"] = StyleProfileService.render_profile_digest(
-                style_profile
             )
 
         author_preference_profiles = self._approved_runtime_author_preference_profiles(
@@ -645,219 +490,6 @@ class BundleBuilder:
                 ensure_ascii=False,
                 sort_keys=True,
             )
-
-        # Long-form control-tower state is generation authority only after the
-        # chapter contract has been explicitly dispatched.  Freeze both the
-        # contract and every pinned/referenced anchor into the bundle hash so a
-        # later edit cannot silently change the instructions used for this run.
-        longform_project_id = scene.project_id or chapter.project_id
-        active_chapter_contracts = list(
-            self.session.execute(
-                select(ChapterContract)
-                .where(
-                    ChapterContract.project_id == longform_project_id,
-                    ChapterContract.chapter_id == scene.chapter_id,
-                    ChapterContract.status.in_(("dispatched", "archived")),
-                )
-                .order_by(
-                    ChapterContract.updated_at.desc(),
-                    ChapterContract.created_at.desc(),
-                )
-            )
-            .scalars()
-            .all()
-        )
-        if len(active_chapter_contracts) > 1:
-            raise DomainError(
-                "BUNDLE_SOURCE_AMBIGUOUS",
-                "multiple dispatched chapter contracts exist for the same chapter",
-                status_code=409,
-                details={
-                    "chapter_id": scene.chapter_id,
-                    "contract_ids": [
-                        row.contract_id for row in active_chapter_contracts
-                    ],
-                },
-            )
-        chapter_contract = (
-            active_chapter_contracts[0] if active_chapter_contracts else None
-        )
-        contract_constraints = (
-            chapter_contract.constraints_json or []
-            if chapter_contract is not None
-            else []
-        )
-        referenced_anchor_ids = {
-            str(item.get("anchor_id") or "").strip()
-            for item in contract_constraints
-            if isinstance(item, dict) and str(item.get("anchor_id") or "").strip()
-        }
-        from novel_system.services.longform_anchor_retrieval import (
-            LongformAnchorRetriever,
-        )
-
-        selection = LongformAnchorRetriever(self.session).select(
-            project_id=longform_project_id,
-            chapter=chapter,
-            scene=scene,
-            contract_constraints=contract_constraints,
-            referenced_anchor_ids=referenced_anchor_ids,
-        )
-        project_anchor_ids = set(
-            self.session.execute(
-                select(LongformAnchor.anchor_id).where(
-                    LongformAnchor.project_id == longform_project_id
-                )
-            )
-            .scalars()
-            .all()
-        )
-        missing_anchor_ids = sorted(referenced_anchor_ids - project_anchor_ids)
-        if missing_anchor_ids:
-            raise DomainError(
-                "BUNDLE_SOURCE_MISSING",
-                "dispatched chapter contract references missing long-form anchors",
-                status_code=409,
-                details={
-                    "chapter_id": scene.chapter_id,
-                    "contract_id": (
-                        chapter_contract.contract_id
-                        if chapter_contract is not None
-                        else None
-                    ),
-                    "missing_anchor_ids": missing_anchor_ids,
-                },
-            )
-        longform_anchors = selection.anchors
-        if longform_anchors:
-            anchor_ids = [row.anchor_id for row in longform_anchors]
-            source_version_refs["longform_anchor_ids"] = anchor_ids
-            source_version_refs["longform_anchor_updated_at"] = [
-                row.updated_at for row in longform_anchors
-            ]
-            source_version_refs["longform_anchor_retrieval"] = {
-                "strategy": selection.strategy,
-                "query_hash": selection.query_hash,
-                "selection_reasons": {
-                    anchor_id: selection.selection_reasons[anchor_id]
-                    for anchor_id in anchor_ids
-                },
-            }
-            ordered_injections.append(
-                {
-                    "slot": "longform_anchors",
-                    "ref_id": anchor_ids[0],
-                    "digest_key": "longform_anchors",
-                }
-            )
-            inline_digests["longform_anchors"] = json.dumps(
-                [
-                    {
-                        "anchor_id": row.anchor_id,
-                        "kind": row.kind,
-                        "text": row.text,
-                        "source_ref": row.source_ref,
-                        "note": row.note,
-                        "status": row.status,
-                        "selection_reason": selection.selection_reasons[row.anchor_id],
-                        "updated_at": row.updated_at,
-                    }
-                    for row in longform_anchors
-                ],
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-        if chapter_contract is not None:
-            source_version_refs["chapter_contract_id"] = chapter_contract.contract_id
-            source_version_refs["chapter_contract_status"] = chapter_contract.status
-            source_version_refs["chapter_contract_updated_at"] = (
-                chapter_contract.updated_at
-            )
-            ordered_injections.append(
-                {
-                    "slot": "chapter_contract",
-                    "ref_id": chapter_contract.contract_id,
-                    "digest_key": "chapter_contract",
-                }
-            )
-            inline_digests["chapter_contract"] = json.dumps(
-                {
-                    "contract_id": chapter_contract.contract_id,
-                    "project_id": chapter_contract.project_id,
-                    "chapter_id": chapter_contract.chapter_id,
-                    "status": chapter_contract.status,
-                    "constraints": chapter_contract.constraints_json or [],
-                    "dispatched_at": chapter_contract.dispatched_at,
-                    "updated_at": chapter_contract.updated_at,
-                },
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-
-        longform_guidance = self._approved_runtime_longform_guidance(scene)
-        if longform_guidance:
-            guidance_ids = [row.guidance_id for row in longform_guidance]
-            source_version_refs["longform_structure_guidance_ids"] = guidance_ids
-            source_version_refs["longform_structure_guidance_updated_at"] = [
-                row.updated_at for row in longform_guidance
-            ]
-            ordered_injections.append(
-                {
-                    "slot": "longform_structure_guidance",
-                    "ref_id": guidance_ids[0],
-                    "digest_key": "longform_structure_guidance",
-                }
-            )
-            inline_digests["longform_structure_guidance"] = json.dumps(
-                [
-                    {
-                        "guidance_id": row.guidance_id,
-                        "scope_type": row.scope_type,
-                        "scope_ref_id": row.scope_ref_id,
-                        "content": row.content,
-                        "source_review_id": row.source_review_id,
-                    }
-                    for row in longform_guidance
-                ],
-                ensure_ascii=False,
-                sort_keys=True,
-            )
-            # §9 Defect B: extract drift_ptype_priority from guidance for "show" correction
-            for row in longform_guidance:
-                rec = row.recommendation_json or {}
-                if "drift_ptype_priority" in rec:
-                    inline_digests["_drift_ptype_priority"] = rec[
-                        "drift_ptype_priority"
-                    ]
-                    break
-
-        world_rules = self.resolver.resolve_active_world_rules(self.session, scene)
-        if world_rules:
-            ordered_injections.append(
-                {
-                    "slot": "world_rules",
-                    "ref_id": world_rules[0].world_rule_id,
-                    "digest_key": "world_rule",
-                }
-            )
-            inline_digests["world_rule"] = self._combined_text(world_rules, "content")
-
-        open_foreshadows = self.resolver.resolve_open_foreshadow_trackers(
-            self.session, scene
-        )
-        if open_foreshadows:
-            ordered_injections.append(
-                {
-                    "slot": "foreshadow",
-                    "ref_id": open_foreshadows[0].foreshadow_id,
-                    "digest_key": "foreshadow",
-                }
-            )
-            inline_digests["foreshadow"] = self._combined_text(open_foreshadows, "text")
-
-        foreshadow_directives = self._foreshadow_directives(scene)
-        if foreshadow_directives:
-            inline_digests["foreshadow_directives"] = foreshadow_directives
 
         scene_summary = self.resolver.resolve_scene_summary(self.session, scene)
         if scene_summary:
@@ -907,8 +539,6 @@ class BundleBuilder:
                 "relation_ids": (
                     [relation_profile.relation_profile_id] if relation_profile else []
                 ),
-                "world_rule_ids": [row.world_rule_id for row in world_rules],
-                "open_foreshadow_ids": [row.foreshadow_id for row in open_foreshadows],
             },
             ordered_injections=ordered_injections,
             inline_digests=inline_digests,
@@ -970,68 +600,6 @@ class BundleBuilder:
             .first()
         )
 
-    def _foreshadow_directives(self, scene: SceneCard) -> str | None:
-        try:
-            from novel_system.services.foreshadow_lifecycle import (
-                ForeshadowLifecycleService,
-            )
-
-            service = ForeshadowLifecycleService(self.session)
-            return service.format_foreshadow_directives(scene.scene_id)
-        except Exception:
-            self._slot_degraded("foreshadow_directives", scene)
-            return None
-
-    def _tension_prompt(self, scene: SceneCard) -> str | None:
-        try:
-            from novel_system.services.tension_curve import TensionCurveService
-
-            service = TensionCurveService.__new__(TensionCurveService)
-            return service.format_tension_prompt(scene)
-        except Exception:
-            self._slot_degraded("tension_pacing", scene)
-            return None
-
-    def _theme_and_expression_budget(self, scene: SceneCard) -> str | None:
-        """Blueprint §12: inject controlling idea + expression spectrum budget.
-
-        Combines the theme prompt (controlling idea + counterpoint map) with
-        the expression spectrum frequency budget, so the model knows which
-        expression levels are still available and which are exhausted.
-        """
-        try:
-            from novel_system.services.theme_anchor import ThemeAnchorService
-
-            project_id = scene.project_id
-            if not project_id:
-                return None
-
-            svc = ThemeAnchorService(self.session)
-            parts: list[str] = []
-
-            # Theme prompt (controlling idea + counterpoint)
-            theme_text = svc.format_theme_prompt(project_id)
-            if theme_text:
-                parts.append(theme_text)
-
-            # Expression spectrum budget
-            budget_warnings = svc.check_expression_budget(project_id)
-            if budget_warnings:
-                parts.append("\n## Expression Spectrum Budget (§12)")
-                for w in budget_warnings:
-                    status_icon = "🚫" if w["status"] == "exhausted" else "⚠️"
-                    parts.append(f"  {status_icon} {w['message']}")
-                parts.append(
-                    "  Prefer the most implicit expression available: "
-                    "结构映射 > 意象渗透 > 行动体现 > 对话暗示 > 直接议论"
-                )
-            elif not parts:
-                return None
-
-            return "\n".join(parts)
-        except Exception:
-            self._slot_degraded("theme_expression_budget", scene)
-            return None
 
     def _narrative_state_digest(self, scene: SceneCard) -> str | None:
         """Inject authoritative character state from event log into the prompt."""
@@ -1226,40 +794,6 @@ class BundleBuilder:
             )
         return rows
 
-    def _approved_runtime_longform_guidance(
-        self, scene: SceneCard
-    ) -> list[LongformStructureGuidance]:
-        scope_pairs = {
-            ("global", "global"),
-            ("chapter", scene.chapter_id),
-            ("scene", scene.scene_id),
-        }
-        character_ids = {
-            item
-            for item in [scene.pov_character_id, *(scene.onstage_chars_json or [])]
-            if item
-        }
-        scope_pairs.update(
-            ("character", character_id) for character_id in character_ids
-        )
-        rows = (
-            self.session.execute(
-                select(LongformStructureGuidance)
-                .where(
-                    LongformStructureGuidance.status == "approved",
-                    LongformStructureGuidance.runtime_eligible == 1,
-                )
-                .order_by(
-                    LongformStructureGuidance.created_at.asc(),
-                    LongformStructureGuidance.guidance_id.asc(),
-                )
-            )
-            .scalars()
-            .all()
-        )
-        return [
-            row for row in rows if (row.scope_type, row.scope_ref_id) in scope_pairs
-        ]
 
     def _chapter_transition_buffer(self, scene: SceneCard) -> str | None:
         """Blueprint §3: inject last 500-1000 chars of previous chapter as continuity anchor.
@@ -1384,158 +918,6 @@ class BundleBuilder:
             self._slot_degraded("similar_scene", scene)
             return None
 
-    def _pov_voice_coloring(self, scene: SceneCard, voice_profile) -> str | None:
-        """Blueprint §2: POV-conditional narration coloring (自由间接引语)."""
-        try:
-            from novel_system.services.pov_voice_coloring import (
-                build_pov_coloring,
-                format_pov_coloring_prompt,
-            )
-
-            pov_id = scene.pov_character_id
-            if not pov_id:
-                return None
-            voice_content = voice_profile.content if voice_profile else None
-            bible = {}
-            brief = scene.writer_brief_json or {}
-            if isinstance(brief, dict):
-                bible = brief.get("character_bible", {}) or {}
-            directive = build_pov_coloring(pov_id, voice_content, bible)
-            return format_pov_coloring_prompt(directive)
-        except Exception:
-            self._slot_degraded("pov_voice_coloring", scene)
-            return None
-
-    def _character_psychology_prompt(self, scene: SceneCard) -> str | None:
-        """Blueprint §11: three-layer character psychology model."""
-        try:
-            from novel_system.services.character_psychology import (
-                extract_psychology_from_bible,
-                format_psychology_prompt,
-            )
-            from novel_system.services.tension_curve import get_scene_tension
-
-            pov_id = scene.pov_character_id
-            if not pov_id:
-                return None
-            brief = scene.writer_brief_json or {}
-            bible = brief.get("character_bible", {}) or {}
-            psych = extract_psychology_from_bible(pov_id, bible)
-            tension = get_scene_tension(scene)
-            return format_psychology_prompt(psych, tension_level=tension)
-        except Exception:
-            self._slot_degraded("character_psychology", scene)
-            return None
-
-    def _character_arc_weights_prompt(self, scene: SceneCard) -> str | None:
-        """Blueprint §11: interpolate decision weights based on story progress.
-
-        Calculates progress as chapter_order/total_chapters (global arc position),
-        then interpolates between the story-phase weight snapshots for the POV character.
-        """
-        try:
-            from novel_system.services.character_arc import CharacterArcService
-
-            pov_id = scene.pov_character_id
-            if not pov_id:
-                return None
-            project_id = require_scene_project_id(self.session, scene)
-            # Calculate global progress: chapter_order / total_chapters
-            chapter = self.session.get(ChapterGoal, scene.chapter_id)
-            if chapter is None or chapter.display_order is None:
-                return None
-            from sqlalchemy import func as sa_func
-
-            # 审计 P-5：count 必须走 select(func.count())（Function 没有 .where），
-            # 且分母只数本项目未回收的章——否则多项目库里进度被稀释。
-            total_chapters = (
-                self.session.scalar(
-                    select(sa_func.count())
-                    .select_from(ChapterGoal)
-                    .where(
-                        ChapterGoal.project_id == project_id,
-                        ChapterGoal.trashed_flag == 0,
-                    )
-                )
-                or 1
-            )
-            # Refine with scene_seq within the chapter for sub-chapter granularity
-            total_scenes_in_chapter = (
-                self.session.scalar(
-                    select(sa_func.count())
-                    .select_from(SceneCard)
-                    .where(
-                        SceneCard.chapter_id == scene.chapter_id,
-                        SceneCard.trashed_flag == 0,
-                    )
-                )
-                or 1
-            )
-            chapter_progress = (chapter.display_order or 0) / max(total_chapters, 1)
-            scene_fraction = ((scene.scene_seq or 1) - 1) / max(
-                total_scenes_in_chapter, 1
-            )
-            # Combine: chapter-level coarse + scene-level fine adjustment
-            progress = chapter_progress + scene_fraction / max(total_chapters, 1)
-            progress = max(0.0, min(1.0, progress))
-
-            arc_svc = CharacterArcService(self.session)
-            return arc_svc.format_weights_at_progress_for_prompt(
-                project_id, pov_id, progress
-            )
-        except Exception:
-            self._slot_degraded("character_arc_weights", scene)
-            return None
-
-    def _voice_fingerprint_prompt(self, scene: SceneCard) -> str | None:
-        """Blueprint §11: structured voice fingerprint for onstage characters."""
-        try:
-            from novel_system.services.voice_fingerprint import (
-                extract_fingerprint_from_bible,
-                format_voice_fingerprint_prompt,
-            )
-
-            pov_id = scene.pov_character_id
-            if not pov_id:
-                return None
-            brief = scene.writer_brief_json or {}
-            bible = brief.get("character_bible", {}) or {}
-            fp = extract_fingerprint_from_bible(pov_id, bible)
-            return format_voice_fingerprint_prompt(fp)
-        except Exception:
-            self._slot_degraded("voice_fingerprint", scene)
-            return None
-
-    def _relationship_matrix_prompt(self, scene: SceneCard) -> str | None:
-        """Blueprint §11: relationship dynamics matrix for onstage characters."""
-        try:
-            from novel_system.services.relationship_matrix import (
-                RelationshipMatrixService,
-            )
-
-            project_id = require_scene_project_id(self.session, scene)
-            onstage = scene.onstage_chars_json or []
-            if len(onstage) < 2:
-                return None
-            svc = RelationshipMatrixService(self.session)
-            matrix = svc.build_matrix(
-                project_id,
-                None,
-                onstage,
-                scene_id=scene.scene_id,
-            )
-            if not matrix.edges:
-                return None
-            prompt = svc.format_for_prompt(matrix)
-            opportunities = svc.tension_opportunities(matrix)
-            if opportunities:
-                prompt += "\n\n### Tension Opportunities\n" + "\n".join(
-                    f"- {o}" for o in opportunities[:3]
-                )
-            return prompt
-        except Exception:
-            self._slot_degraded("relationship_matrix", scene)
-            return None
 
     def _information_asymmetry_digest(self, scene: SceneCard) -> str | None:
         """Blueprint §2/§11: inject information gaps between onstage characters."""

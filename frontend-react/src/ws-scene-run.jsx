@@ -493,10 +493,36 @@ async function scnCreateCards(sid) { // eslint-disable-line no-unused-vars
   return apiPost(`/api/v1/scenes/${sceneId}/preflight/create-cards`, {});
 }
 
+/* 一份质检摘要里的改写指令条目。后端 workbench 已把 rewrite_brief 摊平成字符串列表
+   （api/routes/scenes.py `_extract_rewrite_brief`）；qc-reports 明细路径还会带原始
+   rewrite_brief_json 条目（{instruction} / {carry_note_text}），同样按后端规则取字段，
+   不让对象条目拼成 "[object Object]"。 */
+function scnRewriteBriefEntries(report) {
+  if (!report || typeof report !== "object" || !Array.isArray(report.rewrite_brief)) return [];
+  return report.rewrite_brief
+    .map(entry => {
+      if (typeof entry === "string") return entry.trim();
+      if (entry && typeof entry === "object") return String(entry.instruction || entry.carry_note_text || "").trim();
+      return "";
+    })
+    .filter(Boolean);
+}
+
 function scnRewriteBriefFrom(src) {
-  const reports = [src && src.hard_qc, src && src.soft_qc, src && src.latest_qc].filter(Boolean);
+  const wb = src && typeof src === "object" ? src : {};
+  /* GET /scenes/{id}/workbench 以 hard_qc_summary / soft_qc_summary 透出最近一次硬/软质检
+     （api/routes/scenes.py `_serialize_qc_summary`）。此前这里只读 hard_qc / soft_qc /
+     latest_qc——那是早期契约名，run-jobs 视图的 latest_qc 也不带 rewrite_brief——于是质检
+     给出的具体改法从未落到运行记录，「按硬问题重写」只能退到 issue_key 拼接。
+     顺序：硬质检先于软质检（硬是阻断级重写，软只是修补建议）；同类里服务端键名优先，
+     旧键名仅兜底。 */
+  const reports = [
+    wb.hard_qc_summary, wb.hard_qc,
+    wb.soft_qc_summary, wb.soft_qc,
+    wb.latest_qc,
+  ];
   for (const report of reports) {
-    const brief = Array.isArray(report.rewrite_brief) ? report.rewrite_brief.filter(Boolean) : [];
+    const brief = scnRewriteBriefEntries(report);
     if (brief.length) return brief.join("；");
   }
   const projection = scnGateFrom(src);

@@ -38,17 +38,11 @@ from novel_system.services.context_budget import (
 
 # The four keys this regression was written to protect (previously DROPPED).
 PREVIOUSLY_DROPPED_KEYS = (
-    "character_arc_weights",     # §11 decision weights — blueprint's "core innovation"
-    "theme_expression_budget",   # §12 controlling-idea injection + expression spectrum
-    "narrative_pattern",         # narrative-pattern style digest
     "volume_summary",            # §2 summary tower (wave-2 E5)
 )
 
 # digest_key -> (rendered section label, sentinel value injected for the test)
 REVIVED = {
-    "theme_expression_budget": ("Theme Anchor & Expression Budget", "THEME_ANCHOR_SENTINEL"),
-    "character_arc_weights": ("Character Decision Weights (arc progression)", "ARC_WEIGHTS_SENTINEL"),
-    "narrative_pattern": ("Narrative Patterns", "NARRATIVE_PATTERN_SENTINEL"),
     "volume_summary": ("Volume Summary (atmosphere only)", "VOLUME_SUMMARY_SENTINEL"),
 }
 

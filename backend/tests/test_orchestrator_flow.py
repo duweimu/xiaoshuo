@@ -117,10 +117,11 @@ def test_run_full_scene_records_voice_and_relation_bundle_provenance(client, ses
 
     assert response.status_code == 200
     bundle_id = response.json()["data"]["current_bundle_id"]
-    worksheet = client.get(f"/api/v1/interop/export/bundle-worksheet/{bundle_id}")
-    assert worksheet.status_code == 200
+    from novel_system.db.models import SceneBundle
 
-    snapshot = worksheet.json()["data"]["snapshot"]
+    bundle = session.get(SceneBundle, bundle_id)
+    assert bundle is not None
+    snapshot = bundle.frozen_snapshot_json
     source_refs = snapshot["source_version_refs"]
     assert source_refs["voice_profile_id"] == "VOICE_CHAR_A"
     assert source_refs["voice_profile_row_id"] == "voice_profile_VOICE_CHAR_A_v1"
@@ -187,10 +188,6 @@ def test_run_full_scene_archives_memory_and_updates_status(client, session) -> N
         bool,
     )
     assert workbench_data["near_final_summary"]["author_confirmed_final"] is False
-    independence = workbench_data["near_final_summary"]["judge_independence"]
-    assert independence["basis"] in {"observed_calls", "config_routing"}
-    assert "correlated_judge" in independence
-    assert "independence_status" in independence
     assert workbench_data["hard_qc_summary"] == {
         "qc_report_id": workbench_data["hard_qc_summary"]["qc_report_id"],
         "qc_type": "hard_qc",
@@ -288,9 +285,7 @@ def test_rerunning_scene_appends_immutable_run_artifacts_and_replays_old_final(c
     assert "Goal: 让第二次运行形成新的场景目标" in second_scene_digest
     assert "Location: 旧城门廊" in second_scene_digest
 
-    replay_old = client.get(f"/api/v1/replay/final-scene/{first_final_row_id}")
-    assert replay_old.status_code == 200
-    assert replay_old.json()["data"]["envelope"]["bundle_id"] == first_bundle_id
+    assert session.get(FinalScene, first_final_row_id).source_bundle_id == first_bundle_id
 
 
 def test_workbench_generation_summary_can_resolve_from_current_final_scene_provenance(client, session) -> None:

@@ -423,8 +423,7 @@ function QuotaSection({ quota }) {
 function CalibersDetails({ summary }) {
   const cal = summary && summary.calibers;
   const obs = summary && summary.attempt_observability;
-  const ji = summary && summary.judge_independence;
-  if (!cal && !obs && !ji) return null;
+  if (!cal && !obs) return null;
   const CAL_LABEL = { estimate: "估算口径", provider_actual: "供应商实际", budget_charged: "预算计费" };
   return (
     <details className="card" style={{ padding: "10px 14px", borderRadius: 12, border: "1px solid var(--line, #e5e2dc)" }}>
@@ -459,15 +458,6 @@ function CalibersDetails({ summary }) {
                 {" "}· 含 {fmtInt(obs.legacy_parent_without_attempt_count)} 条旧账（{fmtInt(obs.legacy_unreconstructable_tokens)} tok 不可重构）
               </span>
             )}
-          </div>
-        )}
-        {ji && (
-          <div className="text-xs">
-            评审独立性：
-            {ji.correlated_judge
-              ? <span style={{ color: "var(--gold-deep, #a67c00)" }}>同源（correlated_judge）· 咨询意见降权</span>
-              : <span style={{ color: "var(--acc, #360)" }}>独立</span>}
-            {ji.reason ? ` — ${ji.reason}` : ""}
           </div>
         )}
       </div>

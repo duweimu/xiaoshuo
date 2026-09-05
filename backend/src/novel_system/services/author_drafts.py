@@ -16,7 +16,6 @@ from novel_system.db.models import (
     AuthorDraftProposal,
     AuthorDraftRevision,
     AuthorPreferenceProfile,
-    AuthorStructureCandidate,
     ChapterGoal,
     ChapterMemory,
     ChapterState,
@@ -28,6 +27,7 @@ from novel_system.db.models import (
     StoryProject,
 )
 from novel_system.services.author_lifecycle import AuthorLifecycleService
+from novel_system.services.canonical_manuscripts import canonicalize_author_text
 from novel_system.services.chapter_approval import require_author_target_mutation_allowed
 from novel_system.services.errors import DomainError
 from novel_system.services.hash_engine import canonical_json
@@ -40,6 +40,7 @@ from novel_system.services.llm_task_runner import (
 )
 from novel_system.services.manuscript_html import sanitize_manuscript_html
 from novel_system.services.prompt_builder import PromptBuilder
+from novel_system.services.snowflake_steps import get_step_definition
 from novel_system.services.snowflake_workspace import SnowflakeWorkspaceService
 from novel_system.services.writer_briefs import (
     empty_chapter_writer_brief,
@@ -60,6 +61,17 @@ AUTHOR_DRAFT_EVENT_TYPES = {
 }
 
 _RUNTIME_FINAL_UNAVAILABLE = object()
+
+# 发现稿「提取结构」允许导入的雪花步骤；提示词契约、归一化与错误提示共用这一份。
+PROJECT_DISCOVERY_STEP_KEYS = (
+    "book_brief",
+    "one_sentence_summary",
+    "one_paragraph_summary",
+    "scene_list",
+    "scene_details",
+)
+# 骨架里不给模型看的字段：系统默认策略，不是要从稿子里提取的东西。
+_PROJECT_STEP_SKELETON_OMIT = {"book_brief": {"safety_rules"}}
 
 DESK_DEFAULT_MODE = "write_first"
 AUTHOR_PROPOSAL_TRIAD = ("structure_candidate", "passage_candidate", "language_candidate")
@@ -163,85 +175,6 @@ class AuthorDraftService:
         draft = self._create_draft_row(object_type, object_id, source=source, actor_ref=actor_ref)
         return self._draft_response(draft)
 
-    def open_chapter_draft(
-        self,
-        project_id: str,
-        payload: dict[str, Any] | None = None,
-        *,
-        actor_ref: str = "operator",
-    ) -> dict[str, Any]:
-        body = payload or {}
-        project = self.session.get(StoryProject, project_id)
-        if project is None:
-            raise DomainError("PROJECT_NOT_FOUND", "project not found", status_code=404)
-
-        chapter_id = _optional_text(body, "chapter_id")
-        chapter = self._ensure_author_first_chapter(project, chapter_id, body)
-        current = self._current_row("chapter", chapter.chapter_id)
-        if current is None:
-            source = {
-                "source_text_ref": _author_first_source_ref(chapter.chapter_id, body),
-                "content": sanitize_manuscript_html(_optional_text(body, "initial_content") or ""),
-            }
-            current = self._create_draft_row(
-                "chapter",
-                chapter.chapter_id,
-                source=source,
-                actor_ref="author_first_open",
-                event_payload={
-                    "origin": "author_first_open",
-                    "source": _optional_text(body, "source") or "author_first_open",
-                    "source_ref": _optional_text(body, "source_ref") or "",
-                    "writer_brief_json": body.get("writer_brief_json") if isinstance(body.get("writer_brief_json"), dict) else {},
-                    "opened_by": actor_ref or "",
-                },
-            )
-        if not project.current_chapter_id:
-            project.current_chapter_id = chapter.chapter_id
-        self.session.flush()
-
-        return {
-            "object_type": "chapter",
-            "object_id": chapter.chapter_id,
-            "chapter_id": chapter.chapter_id,
-            "draft": self._draft_response(current),
-        }
-
-    def _ensure_author_first_chapter(
-        self,
-        project: StoryProject,
-        chapter_id: str | None,
-        payload: dict[str, Any],
-    ) -> ChapterGoal:
-        if chapter_id:
-            chapter = self.session.get(ChapterGoal, chapter_id)
-            if chapter is None:
-                raise DomainError("CHAPTER_NOT_FOUND", "chapter not found", status_code=404)
-            if chapter.trashed_flag == 1:
-                raise DomainError("CHAPTER_TRASHED", "chapter is currently in author trash", status_code=409)
-            if chapter.project_id and chapter.project_id != project.project_id:
-                raise DomainError(
-                    "CHAPTER_PROJECT_MISMATCH",
-                    "chapter belongs to a different project",
-                    status_code=409,
-                    details={"chapter_project_id": chapter.project_id, "project_id": project.project_id},
-                )
-            if not chapter.project_id:
-                chapter.project_id = project.project_id
-            return chapter
-
-        next_id = _next_author_first_chapter_id(self.session, project.project_id)
-        brief = payload.get("writer_brief_json") if isinstance(payload.get("writer_brief_json"), dict) else {}
-        chapter = ChapterGoal(
-            chapter_id=next_id,
-            project_id=project.project_id,
-            planned_scene_count=0,
-            chapter_goal=_optional_text(payload, "chapter_goal") or project.title or next_id,
-            writer_brief_json={**normalize_chapter_writer_brief(brief), **brief},
-        )
-        self.session.add(chapter)
-        self.session.flush()
-        return chapter
 
     def _create_draft_row(
         self,
@@ -391,46 +324,6 @@ class AuthorDraftService:
             response["words_rollup"] = words_rollup
         return response
 
-    def derive_from_generation(self, draft_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
-        draft = self._require_draft(draft_id)
-        source = self._source_for_target(draft.object_type, draft.object_id)
-        source_content = sanitize_manuscript_html(source["content"])
-        changed_fields = []
-        if draft.content != source_content:
-            changed_fields.append("author_draft.content")
-        if draft.source_text_ref != source["source_text_ref"]:
-            changed_fields.append("author_draft.source_text_ref")
-        require_author_target_mutation_allowed(
-            self.session,
-            object_type=draft.object_type,
-            object_id=draft.object_id,
-            changed_fields=changed_fields,
-            operation="author_draft.derive_from_generation",
-        )
-        if not changed_fields:
-            response = self._draft_response(draft)
-            response["changed"] = False
-            return response
-        draft.content = source_content
-        draft.source_text_ref = source["source_text_ref"]
-        draft.revision_no += 1
-        draft.updated_by = actor_ref or draft.updated_by
-        self._add_event(
-            draft,
-            event_type="edited",
-            actor_ref=actor_ref,
-            note="derived from current generation output",
-            payload={
-                "source_text_ref": source["source_text_ref"],
-                "source_layer": _source_layer(source["source_text_ref"]),
-                "revision_no": draft.revision_no,
-            },
-        )
-        self._snapshot_revision(draft, actor_ref=actor_ref, origin="derived")
-        self.session.flush()
-        response = self._draft_response(draft)
-        response["changed"] = True
-        return response
 
     def proposals(self, draft_id: str) -> dict[str, Any]:
         draft = self._require_draft(draft_id)
@@ -836,89 +729,6 @@ class AuthorDraftService:
         normalized["source_llm_call_id"] = node_result.llm_call_id
         return normalized
 
-    def apply_patch_option(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
-        draft = self._require_draft(draft_id)
-        require_author_target_mutation_allowed(
-            self.session,
-            object_type=draft.object_type,
-            object_id=draft.object_id,
-            changed_fields=["author_draft.revision_no", "passage_patch.status"],
-            operation="author_draft.apply_patch_option",
-        )
-        patch_id = _required_text(payload, "patch_id")
-        patch = self.session.get(PassagePatchCandidate, patch_id)
-        if patch is None:
-            raise DomainError("PASSAGE_PATCH_NOT_FOUND", "passage patch candidate not found", status_code=404)
-        if patch.source_draft_id and patch.source_draft_id != draft.draft_id:
-            raise DomainError("AUTHOR_DRAFT_PATCH_MISMATCH", "patch candidate belongs to a different author draft", status_code=409)
-        if patch.object_type != draft.object_type or patch.object_id != draft.object_id:
-            raise DomainError("AUTHOR_DRAFT_PATCH_TARGET_MISMATCH", "patch candidate target does not match author draft", status_code=409)
-        option_id = _optional_text(payload, "option_id")
-        option = _patch_option(patch, option_id)
-        source_excerpt = _optional_text(payload, "source_excerpt") or str(option.get("source_excerpt") or patch.source_excerpt or "")
-        replacement = str(option.get("replacement_text") or "").strip()
-        if not replacement:
-            raise DomainError("AUTHOR_DRAFT_PATCH_OPTION_INVALID", "patch option has no replacement text", status_code=400)
-        draft.content = sanitize_manuscript_html(_replace_or_append(draft.content or "", source_excerpt, replacement))
-        draft.revision_no += 1
-        draft.updated_by = actor_ref or draft.updated_by
-        patch.inserted_into_author_draft = 1
-        selected_option_id = str(option.get("option_id") or option_id or "")
-        self._add_event(
-            draft,
-            event_type="candidate_inserted",
-            actor_ref=actor_ref,
-            patch_id=patch.patch_id,
-            option_id=selected_option_id,
-            note=_optional_text(payload, "note") or "patch option inserted into author draft",
-            payload={
-                "applied_to": "author_draft",
-                "source_excerpt": source_excerpt,
-                "replacement_text": replacement,
-                "label": option.get("label") or option.get("tone") or "",
-                "candidate_category": patch.candidate_category,
-                "target_range": patch.target_range_json,
-                "revision_strategy": patch.revision_strategy,
-                "preference_tags": patch.preference_tags_json or [],
-                "revision_no": draft.revision_no,
-            },
-        )
-        self._snapshot_revision(draft, actor_ref=actor_ref, origin="candidate_inserted")
-        self.session.flush()
-        return self._draft_response(draft)
-
-    def record_candidate_event(self, draft_id: str, payload: dict[str, Any], *, actor_ref: str = "operator") -> dict[str, Any]:
-        draft = self._require_draft(draft_id)
-        event_type = _optional_text(payload, "event_type") or ""
-        if event_type not in AUTHOR_DRAFT_EVENT_TYPES - {"created", "edited"}:
-            raise DomainError("AUTHOR_DRAFT_EVENT_INVALID", "candidate event type is invalid", status_code=400)
-        event = self._add_event(
-            draft,
-            event_type=event_type,
-            actor_ref=actor_ref,
-            patch_id=_optional_text(payload, "patch_id"),
-            revision_id=_optional_text(payload, "revision_id"),
-            option_id=_optional_text(payload, "option_id"),
-            note=_optional_text(payload, "note"),
-            payload=payload.get("payload_json") if isinstance(payload.get("payload_json"), dict) else {},
-        )
-        self.session.flush()
-        return {"event": self.serialize_event(event)}
-
-    def events(self, draft_id: str) -> dict[str, Any]:
-        draft = self._require_draft(draft_id)
-        rows = self.session.execute(
-            select(AuthorDraftEvent)
-            .where(AuthorDraftEvent.draft_id == draft.draft_id)
-            .order_by(AuthorDraftEvent.created_at.asc(), AuthorDraftEvent.event_id.asc())
-        ).scalars().all()
-        return {
-            "draft_id": draft.draft_id,
-            "object_type": draft.object_type,
-            "object_id": draft.object_id,
-            "revision_no": draft.revision_no,
-            "events": [self.serialize_event(row) for row in rows],
-        }
 
     # FE-ALIGN F2 修订历史：每次 revision_no 推进存完整内容快照，支撑成稿中心版本对比。
     def _snapshot_revision(self, draft: AuthorDraft, *, actor_ref: str, origin: str) -> None:
@@ -1038,18 +848,6 @@ class AuthorDraftService:
             "source_layer": _source_layer(draft.source_text_ref),
             "runtime_final_ref": runtime_final_ref,
             "aggregate_ref": aggregate_ref,
-            "open_structure_candidates": [
-                self.serialize_structure_candidate(row)
-                for row in self.session.execute(
-                    select(AuthorStructureCandidate)
-                    .where(
-                        AuthorStructureCandidate.object_type == draft.object_type,
-                        AuthorStructureCandidate.object_id == draft.object_id,
-                        AuthorStructureCandidate.status == "candidate",
-                    )
-                    .order_by(AuthorStructureCandidate.created_at.desc(), AuthorStructureCandidate.candidate_id.desc())
-                ).scalars().all()
-            ],
             "open_patch_candidates": [
                 _serialize_patch_candidate(row)
                 for row in self.session.execute(
@@ -1076,158 +874,6 @@ class AuthorDraftService:
             "author_preference_summary": preference.summary_json if preference is not None else {},
         }
 
-    def extract_structure(self, draft_id: str, *, actor_ref: str = "operator") -> dict[str, Any]:
-        draft = self._require_draft(draft_id)
-        target = self._target_payload(draft.object_type, draft.object_id)
-        snapshot = _structure_extract_snapshot(draft, target)
-        prompt = PromptBuilder().build(snapshot, "author_structure_extract")
-        bundle_hash = hashlib.sha256(canonical_json(snapshot).encode("utf-8")).hexdigest()
-        runner = LLMNodeRunner(self.session)
-        execution_step_key = f"author_structure_extract:{draft.draft_id}"
-        context = self._llm_context_for_target(
-            runner,
-            target,
-            node_id="author_structure_extract",
-            step="author_structure_extract",
-            execution_step_key=execution_step_key,
-        )
-        try:
-            node_result = runner.run(
-                scene_id=target["scene_id"] or draft.object_id,
-                chapter_id=target["chapter_id"] or draft.object_id,
-                bundle_id=f"author_draft:{draft.draft_id}",
-                bundle_hash=bundle_hash,
-                node_id="author_structure_extract",
-                step="author_structure_extract",
-                prompt=prompt,
-                user_prompt=_structure_extract_user_prompt(prompt["user_prompt"], draft=draft, target=target),
-                source_draft_row_id=draft.draft_id,
-                source_draft_content=draft.content,
-                execution_step_key=execution_step_key,
-                context=context,
-            )
-        except LLMNodeExecutionError as exc:
-            raise_llm_domain_error(
-                exc,
-                capability_code="AUTHOR_STRUCTURE_EXTRACT_LLM_NOT_CONFIGURED",
-                failure_code="AUTHOR_STRUCTURE_EXTRACT_FAILED",
-                operation="author structure extraction",
-                node_id="author_structure_extract",
-                next_action="configure_author_structure_extract_route_and_retry",
-            )
-
-        normalized = _normalize_structure_payload(node_result.response.structured_output, draft=draft, target=target)
-        for row in self.session.execute(
-            select(AuthorStructureCandidate).where(
-                AuthorStructureCandidate.object_type == draft.object_type,
-                AuthorStructureCandidate.object_id == draft.object_id,
-                AuthorStructureCandidate.status == "candidate",
-            )
-        ).scalars().all():
-            row.status = "superseded"
-        candidate = AuthorStructureCandidate(
-            candidate_id=f"author_structure_{draft.object_type}_{draft.object_id}_{uuid.uuid4().hex[:10]}",
-            object_type=draft.object_type,
-            object_id=draft.object_id,
-            chapter_id=target["chapter_id"],
-            scene_id=target["scene_id"],
-            source_draft_id=draft.draft_id,
-            source_text_ref=f"author_draft:{draft.draft_id}",
-            extraction_llm_call_id=node_result.llm_call_id,
-            candidate_brief_json=normalized["candidate_brief"],
-            uncertainty_notes_json=normalized["uncertainty_notes"],
-            rationale=normalized["rationale"],
-            created_by=actor_ref or "author_structure_extract",
-        )
-        self.session.add(candidate)
-        self.session.flush()
-        return {"candidate": self.serialize_structure_candidate(candidate)}
-
-    def apply_structure_candidate(
-        self,
-        candidate_id: str,
-        payload: dict[str, Any] | None = None,
-        *,
-        actor_ref: str = "operator",
-    ) -> dict[str, Any]:
-        candidate = self._require_structure_candidate(candidate_id)
-        if candidate.status != "candidate":
-            raise DomainError("AUTHOR_STRUCTURE_CANDIDATE_CLOSED", "structure candidate is not open", status_code=409)
-        note = _optional_text(payload or {}, "note")
-        if candidate.object_type == "project":
-            raise DomainError(
-                "AUTHOR_STRUCTURE_PROJECT_APPLY_REQUIRES_SNOWFLAKE",
-                "project structure candidates must be applied through apply-to-snowflake",
-                status_code=400,
-            )
-        require_author_target_mutation_allowed(
-            self.session,
-            object_type=candidate.object_type,
-            object_id=candidate.object_id,
-            changed_fields=["writer_brief_json", "structure_candidate.status"],
-            operation="author_draft.apply_structure_candidate",
-        )
-        if candidate.object_type == "scene":
-            scene = self.lifecycle.require_active_scene(candidate.object_id)
-            current = normalize_scene_writer_brief(scene.writer_brief_json)
-            scene.writer_brief_json = _merge_briefs(current, candidate.candidate_brief_json)
-        else:
-            chapter = self.lifecycle.require_active_chapter(candidate.object_id)
-            current = normalize_chapter_writer_brief(chapter.writer_brief_json)
-            chapter.writer_brief_json = _merge_briefs(current, candidate.candidate_brief_json)
-        candidate.status = "accepted"
-        candidate.author_decision = "accepted"
-        candidate.author_decision_note = note or candidate.author_decision_note
-        self.session.flush()
-        return {"candidate": self.serialize_structure_candidate(candidate)}
-
-    def apply_project_structure_to_snowflake(
-        self,
-        candidate_id: str,
-        payload: dict[str, Any] | None = None,
-        *,
-        actor_ref: str = "operator",
-    ) -> dict[str, Any]:
-        candidate = self._require_structure_candidate(candidate_id)
-        if candidate.status != "candidate":
-            raise DomainError("AUTHOR_STRUCTURE_CANDIDATE_CLOSED", "structure candidate is not open", status_code=409)
-        if candidate.object_type != "project":
-            raise DomainError(
-                "AUTHOR_STRUCTURE_CANDIDATE_NOT_PROJECT",
-                "only project structure candidates can be applied to snowflake",
-                status_code=400,
-            )
-        brief = candidate.candidate_brief_json or {}
-        step_drafts = brief.get("snowflake_steps") if isinstance(brief, dict) else None
-        if not isinstance(step_drafts, dict) or not step_drafts:
-            raise DomainError("AUTHOR_STRUCTURE_PROJECT_EMPTY", "project structure candidate has no snowflake steps", status_code=409)
-        result = SnowflakeWorkspaceService(self.session).import_discovery_steps(candidate.object_id, step_drafts, actor_ref=actor_ref)
-        candidate.status = "accepted"
-        candidate.author_decision = "accepted"
-        candidate.author_decision_note = _optional_text(payload or {}, "note") or candidate.author_decision_note
-        self.session.flush()
-        return {
-            "candidate": self.serialize_structure_candidate(candidate),
-            "imported_step_keys": result["imported_step_keys"],
-            "step_runs": result["step_runs"],
-            "workspace": result["workspace"],
-        }
-
-    def reject_structure_candidate(
-        self,
-        candidate_id: str,
-        payload: dict[str, Any] | None = None,
-        *,
-        actor_ref: str = "operator",
-    ) -> dict[str, Any]:
-        candidate = self._require_structure_candidate(candidate_id)
-        if candidate.status != "candidate":
-            raise DomainError("AUTHOR_STRUCTURE_CANDIDATE_CLOSED", "structure candidate is not open", status_code=409)
-        candidate.status = "rejected"
-        candidate.author_decision = "rejected"
-        candidate.author_decision_note = _optional_text(payload or {}, "note") or candidate.author_decision_note
-        self.session.flush()
-        return {"candidate": self.serialize_structure_candidate(candidate)}
 
     @staticmethod
     def serialize_draft(
@@ -1306,27 +952,6 @@ class AuthorDraftService:
             "updated_at": row.updated_at,
         }
 
-    @staticmethod
-    def serialize_structure_candidate(row: AuthorStructureCandidate) -> dict[str, Any]:
-        return {
-            "candidate_id": row.candidate_id,
-            "object_type": row.object_type,
-            "object_id": row.object_id,
-            "chapter_id": row.chapter_id,
-            "scene_id": row.scene_id,
-            "source_draft_id": row.source_draft_id,
-            "source_text_ref": row.source_text_ref,
-            "extraction_llm_call_id": row.extraction_llm_call_id,
-            "candidate_brief": row.candidate_brief_json or {},
-            "uncertainty_notes": row.uncertainty_notes_json or [],
-            "rationale": row.rationale,
-            "status": row.status,
-            "author_decision": row.author_decision,
-            "author_decision_note": row.author_decision_note,
-            "created_by": row.created_by,
-            "created_at": row.created_at,
-            "updated_at": row.updated_at,
-        }
 
     def _require_target(self, object_type: str, object_id: str) -> None:
         if object_type == "project":
@@ -1754,12 +1379,6 @@ class AuthorDraftService:
             "current_writer_brief": normalize_chapter_writer_brief(chapter.writer_brief_json),
         }
 
-    def _require_structure_candidate(self, candidate_id: str) -> AuthorStructureCandidate:
-        row = self.session.get(AuthorStructureCandidate, candidate_id)
-        if row is None:
-            raise DomainError("AUTHOR_STRUCTURE_CANDIDATE_NOT_FOUND", "structure candidate not found", status_code=404)
-        return row
-
 
 def _optional_text(payload: dict[str, Any], key: str) -> str | None:
     value = payload.get(key)
@@ -1788,21 +1407,6 @@ def _source_layer(source_text_ref: str | None) -> str:
     if value.startswith("author_draft:"):
         return "author_draft"
     return "unknown"
-
-
-def _patch_option(row: PassagePatchCandidate, option_id: str | None) -> dict[str, Any]:
-    options = row.replacement_options_json or []
-    if not isinstance(options, list) or not options:
-        raise DomainError("AUTHOR_DRAFT_PATCH_OPTION_NOT_FOUND", "patch candidate has no replacement options", status_code=404)
-    if option_id:
-        for option in options:
-            if isinstance(option, dict) and str(option.get("option_id") or "") == option_id:
-                return option
-        raise DomainError("AUTHOR_DRAFT_PATCH_OPTION_NOT_FOUND", "patch option not found", status_code=404)
-    first = options[0]
-    if not isinstance(first, dict):
-        raise DomainError("AUTHOR_DRAFT_PATCH_OPTION_INVALID", "patch option must be an object", status_code=400)
-    return first
 
 
 def _replace_or_append(content: str, source_excerpt: str, replacement: str) -> str:
@@ -2281,30 +1885,6 @@ def _short_excerpt(text: str, *, limit: int = 160) -> str:
     return compact if len(compact) <= limit else f"{compact[:limit].rstrip()}..."
 
 
-def _next_author_first_chapter_id(session: Session, project_id: str) -> str:
-    prefix = f"{project_id}_CH"
-    rows = session.execute(
-        select(ChapterGoal.chapter_id).where(ChapterGoal.chapter_id.like(f"{prefix}%"))
-    ).scalars().all()
-    used: set[int] = set()
-    for row_id in rows:
-        suffix = str(row_id or "")[len(prefix) :]
-        if suffix.isdigit():
-            used.add(int(suffix))
-    index = 1
-    while index in used:
-        index += 1
-    return f"{prefix}{index:03d}"
-
-
-def _author_first_source_ref(chapter_id: str, payload: dict[str, Any]) -> str:
-    source = _optional_text(payload, "source") or "author_first_open"
-    source_ref = _optional_text(payload, "source_ref")
-    if source_ref:
-        return f"{source}:{source_ref}"
-    return f"{source}:chapter:{chapter_id}"
-
-
 def _decision_counts_by_type(decisions: list[dict[str, Any]], decision: str) -> dict[str, int]:
     counts: dict[str, int] = {}
     for row in decisions:
@@ -2378,132 +1958,3 @@ def _scene_blank_scaffold(scene: SceneCard, *, chapter_goal: str) -> str:
     return "\n".join(parts)
 
 
-def _structure_extract_snapshot(draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
-    inline_digests = {
-        "scene_summary": json.dumps(
-            {
-                "object_type": draft.object_type,
-                "object_id": draft.object_id,
-                "source_draft_id": draft.draft_id,
-                "source_text_ref": f"author_draft:{draft.draft_id}",
-                "author_draft": draft.content or "",
-                "current_writer_brief": target.get("current_writer_brief") or {},
-            },
-            ensure_ascii=False,
-            sort_keys=True,
-        ),
-        "chapter_goal": str(target.get("chapter_goal") or ""),
-    }
-    if target.get("object_type") == "scene":
-        inline_digests["scene_card"] = json.dumps(target.get("scene_card") or {}, ensure_ascii=False, sort_keys=True)
-        inline_digests["chapter_writer_brief"] = json.dumps(target.get("chapter_writer_brief") or {}, ensure_ascii=False, sort_keys=True)
-    if target.get("object_type") == "project":
-        inline_digests["project"] = json.dumps(target.get("project") or {}, ensure_ascii=False, sort_keys=True)
-    ordered_injections = [
-        {"slot": "author_draft", "ref_id": draft.draft_id, "digest_key": "scene_summary"},
-        {"slot": "chapter_goal", "ref_id": target.get("chapter_id") or "", "digest_key": "chapter_goal"},
-    ]
-    if target.get("object_type") == "scene":
-        ordered_injections.append({"slot": "scene_card", "ref_id": target.get("scene_id") or "", "digest_key": "scene_card"})
-    if target.get("object_type") == "project":
-        ordered_injections.append({"slot": "project", "ref_id": target.get("project_id") or "", "digest_key": "project"})
-    return {
-        "contract_version": "AUTHOR_STRUCTURE_EXTRACT_SOURCE_v1",
-        "stage_allowlist_name": "author_structure_extract",
-        "scene_id": target.get("scene_id") or "",
-        "chapter_id": target.get("chapter_id") or "",
-        "source_version_refs": {
-            "source_draft_id": draft.draft_id,
-            "object_type": draft.object_type,
-            "object_id": draft.object_id,
-        },
-        "resolved_ref_ids": {},
-        "ordered_injections": ordered_injections,
-        "inline_digests": inline_digests,
-    }
-
-
-def _structure_extract_user_prompt(base_prompt: str, *, draft: AuthorDraft, target: dict[str, Any]) -> str:
-    return "\n".join(
-        [
-            base_prompt,
-            "",
-            "## Author Draft Target",
-            f"Object Type: {draft.object_type}",
-            f"Object ID: {draft.object_id}",
-            f"Project ID: {target.get('project_id') or ''}",
-            f"Chapter ID: {target.get('chapter_id') or ''}",
-            f"Scene ID: {target.get('scene_id') or ''}",
-            "",
-            "## Current Author Draft",
-            draft.content or "",
-            "",
-            "## Current Metadata",
-            json.dumps(target, ensure_ascii=False, sort_keys=True),
-        ]
-    )
-
-
-def _normalize_structure_payload(payload: Any, *, draft: AuthorDraft, target: dict[str, Any]) -> dict[str, Any]:
-    if not isinstance(payload, dict):
-        raise DomainError(
-            "AUTHOR_STRUCTURE_OUTPUT_INVALID",
-            "author structure extraction response must be a JSON object",
-            status_code=502,
-            details={"node_id": "author_structure_extract", "object_type": draft.object_type},
-        )
-    if draft.object_type == "project":
-        raw_steps = payload.get("snowflake_steps")
-        if not isinstance(raw_steps, dict):
-            raw_steps = payload.get("candidate_brief", {}).get("snowflake_steps") if isinstance(payload.get("candidate_brief"), dict) else None
-        if not isinstance(raw_steps, dict):
-            raise DomainError(
-                "AUTHOR_STRUCTURE_OUTPUT_INVALID",
-                "author structure extraction response is missing snowflake_steps",
-                status_code=502,
-                details={"node_id": "author_structure_extract", "object_type": draft.object_type},
-            )
-        allowed = {"book_brief", "one_sentence_summary", "one_paragraph_summary", "scene_list", "scene_details"}
-        snowflake_steps = {key: value for key, value in raw_steps.items() if key in allowed and isinstance(value, dict)}
-        notes = payload.get("uncertainty_notes")
-        uncertainty_notes = [str(item).strip() for item in notes if str(item).strip()] if isinstance(notes, list) else []
-        rationale = payload.get("rationale")
-        return {
-            "candidate_brief": {"snowflake_steps": snowflake_steps},
-            "uncertainty_notes": uncertainty_notes,
-            "rationale": str(rationale).strip() if isinstance(rationale, str) and rationale.strip() else "Extracted project discovery draft into snowflake candidate steps.",
-        }
-    raw_brief = payload.get("candidate_brief")
-    if not isinstance(raw_brief, dict):
-        raw_brief = payload.get("scene_writer_brief") if draft.object_type == "scene" else payload.get("chapter_writer_brief")
-    if not isinstance(raw_brief, dict):
-        raise DomainError(
-            "AUTHOR_STRUCTURE_OUTPUT_INVALID",
-            "author structure extraction response is missing candidate_brief",
-            status_code=502,
-            details={"node_id": "author_structure_extract", "object_type": draft.object_type},
-        )
-    if draft.object_type == "scene":
-        normalized = normalize_scene_writer_brief({**empty_scene_writer_brief(), **raw_brief})
-    else:
-        normalized = normalize_chapter_writer_brief({**empty_chapter_writer_brief(), **raw_brief})
-    notes = payload.get("uncertainty_notes")
-    uncertainty_notes = [str(item).strip() for item in notes if str(item).strip()] if isinstance(notes, list) else []
-    rationale = payload.get("rationale")
-    return {
-        "candidate_brief": _nonempty_brief(normalized),
-        "uncertainty_notes": uncertainty_notes,
-        "rationale": str(rationale).strip() if isinstance(rationale, str) and rationale.strip() else "从作者稿反向提取戏剧意图。",
-    }
-
-
-def _merge_briefs(current: dict[str, str], candidate: dict[str, Any]) -> dict[str, str]:
-    merged = dict(current)
-    for key, value in candidate.items():
-        if isinstance(value, str) and value.strip():
-            merged[key] = value.strip()
-    return merged
-
-
-def _nonempty_brief(brief: dict[str, str]) -> dict[str, str]:
-    return {key: value for key, value in brief.items() if key != "schema_version" and isinstance(value, str) and value.strip()}

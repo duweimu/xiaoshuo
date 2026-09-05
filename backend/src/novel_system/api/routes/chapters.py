@@ -22,7 +22,6 @@ from novel_system.services.chapter_approval import (
     require_chapter_mutation_allowed,
 )
 from novel_system.services.chapter_runner import ChapterRunnerService
-from novel_system.services.chapter_runtime import ChapterRuntimeService
 from novel_system.services.errors import DomainError
 from novel_system.services.text_validation import validate_user_text_payload
 from novel_system.services.writer_briefs import normalize_chapter_writer_brief
@@ -65,18 +64,6 @@ class ChapterIdsRequest(BaseModel):
     chapter_ids: list[BoundedIdentifier] = Field(max_length=10_000)
 
 
-class ChapterRuntimeBackfillRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    strategy: str = Field(min_length=1, max_length=64)
-
-
-class ChapterManualHoldRequest(BaseModel):
-    model_config = ConfigDict(extra="forbid", strict=True)
-
-    reason: str = Field(min_length=1, max_length=4_000)
-
-
 class ChapterSceneOrderRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
@@ -88,14 +75,6 @@ class ChapterSceneOrderRequest(BaseModel):
 def list_chapters(request: Request, session: Session = Depends(get_session)):
     return ok(
         {"items": AuthorLifecycleService(session).list_active_chapters()},
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
-@router.get("/api/v1/author-trash")
-def author_trash(request: Request, session: Session = Depends(get_session)):
-    return ok(
-        AuthorLifecycleService(session).author_trash_payload(),
         req_id=getattr(request.state, "request_id", None),
     )
 
@@ -134,32 +113,6 @@ def trash_chapters(payload: ChapterIdsRequest, request: Request, session: Sessio
         path_template="/api/v1/chapters/trash",
         payload=body,
         action=lambda: AuthorLifecycleService(session).trash_chapters(body["chapter_ids"], actor_ref),
-    )
-
-
-@router.post("/api/v1/chapters/restore")
-def restore_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
-    body = payload.model_dump(mode="json")
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/chapters/restore",
-        payload=body,
-        action=lambda: AuthorLifecycleService(session).restore_chapters(body["chapter_ids"]),
-    )
-
-
-@router.post("/api/v1/chapters/purge")
-def purge_chapters(payload: ChapterIdsRequest, request: Request, session: Session = Depends(get_session)):
-    body = payload.model_dump(mode="json")
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/chapters/purge",
-        payload=body,
-        action=lambda: AuthorLifecycleService(session).purge_chapters(body["chapter_ids"]),
     )
 
 
@@ -280,22 +233,6 @@ def _assert_chapter_display_order_available(
         )
 
 
-@router.get("/api/v1/chapters/{chapter_id}/author-workspace")
-def author_workspace(chapter_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(
-        AuthorLifecycleService(session).author_workspace_payload(chapter_id),
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
-@router.get("/api/v1/chapters/{chapter_id}/scene-draft")
-def chapter_scene_draft(chapter_id: str, request: Request, session: Session = Depends(get_session)):
-    return ok(
-        AuthorLifecycleService(session).scene_draft_payload(chapter_id),
-        req_id=getattr(request.state, "request_id", None),
-    )
-
-
 @router.post("/api/v1/chapters/{chapter_id}/run/full")
 def run_chapter_full(
     chapter_id: str,
@@ -320,85 +257,6 @@ def chapter_run_status(chapter_id: str, request: Request, session: Session = Dep
     AuthorLifecycleService(session).require_active_chapter(chapter_id)
     payload = ChapterRunnerService(session).run_status(chapter_id)
     return ok(payload, req_id=getattr(request.state, "request_id", None))
-
-
-@router.post("/api/v1/chapters/{chapter_id}/runtime/backfill/{stage_id}")
-def chapter_runtime_backfill(
-    chapter_id: str,
-    stage_id: str,
-    payload: ChapterRuntimeBackfillRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/chapters/{chapter_id}/runtime/backfill/{stage_id}",
-        payload={"chapter_id": chapter_id, "stage_id": stage_id, **body},
-        action=lambda: ChapterRuntimeService(session).run_backfill(chapter_id, stage_id, body["strategy"]),
-    )
-
-
-@router.post("/api/v1/chapters/{chapter_id}/runtime/aggregate/final")
-def chapter_runtime_final_aggregate(
-    chapter_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/chapters/{chapter_id}/runtime/aggregate/final",
-        payload={"chapter_id": chapter_id},
-        action=lambda: ChapterRuntimeService(session).run_final_aggregate(chapter_id),
-    )
-
-
-@router.post("/api/v1/chapters/{chapter_id}/runtime/manual-hold")
-def chapter_runtime_manual_hold(
-    chapter_id: str,
-    payload: ChapterManualHoldRequest,
-    request: Request,
-    session: Session = Depends(get_session),
-):
-    body = payload.model_dump(mode="json")
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/chapters/{chapter_id}/runtime/manual-hold",
-        payload={"chapter_id": chapter_id, **body},
-        action=lambda: ChapterRuntimeService(session).set_manual_hold(chapter_id, body["reason"]),
-    )
-
-
-@router.post("/api/v1/chapters/{chapter_id}/runtime/manual-hold/clear")
-def chapter_runtime_manual_hold_clear(
-    chapter_id: str,
-    request: Request,
-    payload: EmptyRequest | None = None,
-    session: Session = Depends(get_session),
-):
-    actor_ref = getattr(request.state, "operator_ref", None) or "operator"
-    AuthorLifecycleService(session).require_active_chapter(chapter_id)
-    return idempotent_response(
-        request,
-        session,
-        method="POST",
-        path_template="/api/v1/chapters/{chapter_id}/runtime/manual-hold/clear",
-        payload={"chapter_id": chapter_id},
-        action=lambda: ChapterRuntimeService(session).clear_manual_hold(chapter_id),
-    )
 
 
 @router.post("/api/v1/chapters/{chapter_id}/scene-order")

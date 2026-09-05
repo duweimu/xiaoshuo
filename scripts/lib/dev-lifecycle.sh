@@ -34,11 +34,19 @@ dev_stop_port() {
   done
 }
 
-# Poll a URL until it answers 2xx/3xx, or time out.
+# Poll a URL until it answers 2xx/3xx (return 0), or time out (return 1).
+# With an optional third argument — the pid of the leg being waited on — give
+# up early with return 2 as soon as that process is gone, so a leg that dies
+# during startup (missing toolchain, failed migration, ...) fails fast instead
+# of silently eating the whole timeout. Legs `exec` their server as the final
+# step, so the pid stays valid for the lifetime of the server.
 dev_wait_http_ok() {
-  local url="$1" timeout="${2:-90}" waited=0
+  local url="$1" timeout="${2:-90}" pid="${3:-}" waited=0
   while [ "$waited" -lt "$timeout" ]; do
     curl -fsS -o /dev/null "$url" 2>/dev/null && return 0
+    if [ -n "$pid" ] && ! kill -0 "$pid" 2>/dev/null; then
+      return 2
+    fi
     sleep 1
     waited=$((waited + 1))
   done

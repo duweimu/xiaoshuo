@@ -12,7 +12,6 @@ from novel_system.db.models import (
     FinalScene,
     LlmCall,
     OperationLog,
-    ProjectBacktrackItem,
     SceneCard,
     SceneRunState,
     StoryProject,
@@ -42,24 +41,57 @@ def _create_project(client, *, title: str = "雨城残响", target_chapter_count
     return response.json()["data"]["project"]
 
 
+
 def _generate_plan(client, project_id: str) -> dict:
-    response = client.post(
-        f"/api/v1/projects/{project_id}/outline-plan",
-        json={},
-        headers={"X-Idempotency-Key": f"plan-{project_id}"},
-    )
-    assert response.status_code == 200
-    return response.json()["data"]["plan"]
+    """Seed a reviewable outline plan directly; the LLM/local outline planner was retired."""
+    from novel_system.db.models import OutlinePlan, StoryProject
+    from novel_system.db.session import SessionLocal
+    from novel_system.services.projects import outline_plan_payload
+
+    with SessionLocal() as session:
+        project = session.get(StoryProject, project_id)
+        assert project is not None
+        chapter_count = max(1, int(project.target_chapter_count or 2))
+        chapters = []
+        for index in range(1, chapter_count + 1):
+            chapter_id = f"{project_id}_CH{index:02d}"
+            chapters.append(
+                {
+                    "chapter_id": chapter_id,
+                    "title": f"第{index}章",
+                    "chapter_goal": f"推进第{index}章的核心冲突",
+                    "scenes": [
+                        {
+                            "scene_id": f"{chapter_id}_SC{seq:02d}",
+                            "scene_seq": seq,
+                            "scene_goal": f"第{index}章第{seq}场",
+                            "beats_json": ["开场", "转折", "收束"],
+                            "scene_type": "proactive",
+                        }
+                        for seq in (1, 2)
+                    ],
+                }
+            )
+        plan = OutlinePlan(
+            plan_id=f"plan_{project_id}_v1",
+            project_id=project_id,
+            version=1,
+            status="pending_review",
+            plan_json={"source": "test_fixture", "chapters": chapters},
+        )
+        session.add(plan)
+        session.commit()
+        return outline_plan_payload(plan)
 
 
 def _approve_plan(client, project_id: str, plan_id: str) -> dict:
-    response = client.post(
-        f"/api/v1/projects/{project_id}/outline-plan/{plan_id}/approve",
-        json={},
-        headers={"X-Idempotency-Key": f"approve-plan-{plan_id}"},
-    )
-    assert response.status_code == 200
-    return response.json()["data"]
+    from novel_system.db.session import SessionLocal
+    from novel_system.services.projects import ProjectService
+
+    with SessionLocal() as session:
+        result = ProjectService(session).approve_outline_plan(project_id, plan_id)
+        session.commit()
+        return result
 
 
 def test_project_create_list_and_dashboard_keep_free_text_outline(client) -> None:
@@ -82,235 +114,6 @@ def test_project_create_list_and_dashboard_keep_free_text_outline(client) -> Non
     assert dashboard["project"]["outline_text"] == project["outline_text"]
     assert dashboard["next_action"] == "generate_outline_plan"
     assert dashboard["chapters"] == []
-
-
-def test_outline_plan_generation_returns_reviewable_chapters_and_scenes(client) -> None:
-    project = _create_project(client, target_chapter_count=2)
-
-    plan = _generate_plan(client, project["project_id"])
-
-    assert plan["status"] == "pending_review"
-    chapters = plan["plan_json"]["chapters"]
-    assert len(chapters) == 2
-    assert chapters[0]["chapter_id"].endswith("_CH01")
-    assert chapters[0]["chapter_goal"]
-    assert chapters[0]["scenes"]
-    assert chapters[0]["scenes"][0]["scene_id"].endswith("_SC01")
-    assert chapters[0]["scenes"][0]["scene_goal"]
-    assert chapters[0]["scenes"][0]["beats_json"]
-    assert "禁复刻" in " ".join(plan["plan_json"]["reference_safety"])
-
-
-def test_outline_plan_generation_uses_project_outline_llm_when_live(client, session, monkeypatch) -> None:
-    class FakeOutlineRunner:
-        def __init__(self, db_session) -> None:
-            self.session = db_session
-
-        def run(self, **kwargs):
-            assert kwargs["node_id"] == "project_outline_plan"
-            context = kwargs["context"]
-            assert context.scope_type == "project"
-            assert context.scope_id == kwargs["chapter_id"]
-            assert context.project_id == kwargs["chapter_id"]
-            assert context.chapter_id is None
-            assert context.scene_id is None
-            self.session.add(
-                LlmCall(
-                    llm_call_id="llm_call_project_outline_test",
-                    scope_type="project",
-                    scope_id=kwargs["chapter_id"],
-                    provider="fake",
-                    model="fake-model",
-                    node_id="project_outline_plan",
-                    step="project_outline_plan",
-                    request_payload_summary={"template_name": "project_outline_plan"},
-                    response_payload_summary={"source": "llm"},
-                    prompt_tokens=1,
-                    completion_tokens=1,
-                    total_tokens=2,
-                    latency_ms=1,
-                )
-            )
-            self.session.flush()
-            return SimpleNamespace(
-                llm_call_id="llm_call_project_outline_test",
-                response=SimpleNamespace(
-                    structured_output={
-                        "reference_safety": ["abstract craft only"],
-                        "chapters": [
-                            {
-                                "title": "LLM Chapter One",
-                                "chapter_goal": "Force the protagonist into a visible choice.",
-                                "main_plot_push": "The old letter becomes actionable.",
-                                "emotional_target": "Trust costs something visible.",
-                                "ending_effect": "A new clue changes the next action.",
-                                "must_not": "Do not copy source-book expression.",
-                                "scenes": [
-                                    {
-                                        "scene_goal": "Open with the letter and a forced choice.",
-                                        "beats_json": ["letter arrives", "choice is made"],
-                                        "must_include_text": "letter",
-                                        "forbidden_text": "source-book names",
-                                        "exit_change": "The protagonist commits.",
-                                        "hook": "A witness calls back.",
-                                        "target_length_band": "medium",
-                                        "scene_type": "plot_scene",
-                                    }
-                                ],
-                            }
-                        ],
-                    }
-                ),
-            )
-
-    monkeypatch.setenv("NOVEL_SYSTEM_LLM_ENABLED", "true")
-    monkeypatch.setattr("novel_system.services.projects.LLMNodeRunner", FakeOutlineRunner, raising=False)
-    project = _create_project(client, target_chapter_count=1, key="llm-plan")
-
-    plan = _generate_plan(client, project["project_id"])
-
-    assert plan["plan_json"]["source"] == "llm"
-    assert plan["plan_json"]["llm_call_id"] == "llm_call_project_outline_test"
-    assert plan["plan_json"]["chapters"][0]["title"] == "LLM Chapter One"
-    assert session.get(LlmCall, "llm_call_project_outline_test") is not None
-
-
-def test_approve_outline_plan_materializes_chapter_goals_and_scene_cards(client, session) -> None:
-    project = _create_project(client, target_chapter_count=2)
-    plan = _generate_plan(client, project["project_id"])
-
-    result = _approve_plan(client, project["project_id"], plan["plan_id"])
-
-    assert result["project"]["status"] == "chapter_ready"
-    assert result["project"]["current_chapter_id"].endswith("_CH01")
-    assert result["created_chapter_count"] == 2
-    assert result["created_scene_count"] >= 2
-
-    chapter = session.get(ChapterGoal, result["project"]["current_chapter_id"])
-    assert chapter is not None
-    assert chapter.project_id == project["project_id"]
-    assert chapter.outline_plan_id == plan["plan_id"]
-    assert chapter.writer_brief_json["source"] == "project_outline_plan"
-
-    scenes = (
-        session.query(SceneCard)
-        .filter(SceneCard.chapter_id == result["project"]["current_chapter_id"])
-        .order_by(SceneCard.scene_seq)
-        .all()
-    )
-    assert scenes
-    assert all(scene.project_id == project["project_id"] for scene in scenes)
-    assert all(scene.outline_plan_id == plan["plan_id"] for scene in scenes)
-    assert scenes[-1].is_chapter_last == 1
-
-
-def test_ready_reference_profile_can_bind_to_project_but_draft_profile_cannot(client, session) -> None:
-    project = _create_project(client)
-    session.add(
-        StyleReferenceBook(
-            book_id="BOOK_STYLE",
-            title="参考书",
-            author_label="某作者",
-            source_kind="path",
-            source_path="ref.txt",
-            cloud_policy="local_only",
-            text_checksum="checksum",
-            total_chars=120,
-            status="ready",
-            stats_json={},
-        )
-    )
-    # SQLite FK enforcement is enabled in runtime.  Keep the fixture's write
-    # order identical to the product contract instead of relying on ORM table
-    # ordering for objects that do not declare relationships.
-    session.flush()
-    session.add(
-        StyleReferenceRun(
-            run_id="RUN_STYLE",
-            book_id="BOOK_STYLE",
-            status="done",
-            phase="done",
-            coverage_json={},
-        )
-    )
-    session.flush()
-    session.add(
-        StyleReferenceProfile(
-            profile_id="PROFILE_READY",
-            book_id="BOOK_STYLE",
-            run_id="RUN_STYLE",
-            title="抽象风格画像",
-            status="active",
-            profile_json={"rhythm": ["短句推进"], "forbidden_copy_rules": ["不复制原文表达"]},
-        )
-    )
-    session.add(
-        StyleReferenceProfile(
-            profile_id="PROFILE_DRAFT",
-            book_id="BOOK_STYLE",
-            run_id="RUN_STYLE",
-            title="未完成画像",
-            status="draft",
-            profile_json={},
-        )
-    )
-    session.commit()
-
-    ready_response = client.post(
-        f"/api/v1/projects/{project['project_id']}/reference-profiles",
-        json={"profile_id": "PROFILE_READY"},
-        headers={"X-Idempotency-Key": "bind-ready-profile"},
-    )
-    assert ready_response.status_code == 200
-    payload = ready_response.json()["data"]
-    assert payload["project"]["reference_profile_ids"] == ["PROFILE_READY"]
-    assert payload["reference_profile"]["profile_id"] == "PROFILE_READY"
-    assert payload["binding_id"].startswith("sr_bind_")
-    assert payload["review_ids"] == []
-
-    refreshed_project = session.get(StoryProject, project["project_id"])
-    assert refreshed_project is not None
-
-    bindings = session.execute(
-        select(StyleReferenceInjectionBinding).where(
-            StyleReferenceInjectionBinding.scope == "project",
-            StyleReferenceInjectionBinding.scope_ref_id == project["project_id"],
-            StyleReferenceInjectionBinding.task_type == "scene_generation",
-        )
-    ).scalars().all()
-    assert [binding.profile_id for binding in bindings] == ["PROFILE_READY"]
-
-    draft_response = client.post(
-        f"/api/v1/projects/{project['project_id']}/reference-profiles",
-        json={"profile_id": "PROFILE_DRAFT"},
-        headers={"X-Idempotency-Key": "bind-draft-profile"},
-    )
-    assert draft_response.status_code == 409
-    assert draft_response.json()["error"]["code"] == "REFERENCE_PROFILE_NOT_READY"
-
-    dashboard_response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
-    assert dashboard_response.status_code == 200
-    profiles = dashboard_response.json()["data"]["reference_profiles"]
-    assert profiles == [
-        {
-            "profile_id": "PROFILE_READY",
-            "title": "抽象风格画像",
-            "status": "active",
-            "profile_json": {"rhythm": ["短句推进"], "forbidden_copy_rules": ["不复制原文表达"]},
-            "safe_summary": {
-                "abstract_tags": [
-                    {"label": "节奏", "summary": "短句推进"},
-                    {"label": "安全提示", "summary": "不复制原文表达"},
-                ],
-                "safety_note": "仅使用抽象节奏、结构和安全规则；不展示或复制参考书原文。",
-            },
-            "binding_id": bindings[0].binding_id,
-            "scope": "project",
-            "scope_ref_id": project["project_id"],
-            "task_type": "scene_generation",
-            "strategy": "mixed",
-        }
-    ]
 
 
 def test_project_chapter_run_stops_at_final_review_and_approve_final_advances(client, session, monkeypatch) -> None:
@@ -644,86 +447,6 @@ def test_project_review_packet_uses_aggregate_or_assembled_manuscript_body(clien
     assert packet["target_word_count_band"]["max"] == 138000
     assert packet["aggregate_row_id"] == "chapter_memory_final"
     assert "source_safety_scan" in packet
-
-
-def test_project_final_review_can_request_scene_revision_without_advancing_chapter(client, session) -> None:
-    project = _create_project(client, target_chapter_count=1, key="scene-revision-review")
-    plan = _generate_plan(client, project["project_id"])
-    approved = _approve_plan(client, project["project_id"], plan["plan_id"])
-    chapter_id = approved["project"]["current_chapter_id"]
-    scenes = (
-        session.query(SceneCard)
-        .filter(SceneCard.chapter_id == chapter_id)
-        .order_by(SceneCard.scene_seq)
-        .all()
-    )
-    assert scenes
-    first_scene = scenes[0]
-    for index, scene in enumerate(scenes, start=1):
-        final_row_id = f"final_review_{scene.scene_id}"
-        session.add(
-            FinalScene(
-                row_id=final_row_id,
-                scene_id=scene.scene_id,
-                chapter_id=chapter_id,
-                content=f"final scene {index} body",
-                source_bundle_id=f"bundle_review_{index}",
-                source_bundle_hash=f"hash_review_{index}",
-            )
-        )
-        state = session.get(SceneRunState, scene.scene_id)
-        assert state is not None
-        state.current_final_scene_row_id = final_row_id
-        state.scene_status = "archived"
-    session.add(
-        ChapterRunJob(
-            job_id=f"review_job_{chapter_id}",
-            chapter_id=chapter_id,
-            status="completed",
-            job_type="chapter_run_full",
-            payload_json={},
-            result_summary_json={"latest_error": None},
-        )
-    )
-    db_project = session.get(StoryProject, project["project_id"])
-    assert db_project is not None
-    db_project.status = "chapter_final_review"
-    session.commit()
-
-    dashboard_response = client.get(f"/api/v1/projects/{project['project_id']}/dashboard")
-    assert dashboard_response.status_code == 200
-    packet = dashboard_response.json()["data"]["review_packet"]
-    assert packet["scene_reviews"][0]["scene_id"] == first_scene.scene_id
-    assert packet["scene_reviews"][0]["body_excerpt"].startswith("final scene 1")
-
-    response = client.post(
-        f"/api/v1/projects/{project['project_id']}/chapters/{chapter_id}/final-review",
-        json={
-            "decision": "request_scene_revision",
-            "revision_notes": "The first scene needs a visible cost before approval.",
-            "scene_decisions": [
-                {
-                    "scene_id": first_scene.scene_id,
-                    "decision": "request_revision",
-                    "note": "Add a consequence the protagonist cannot undo.",
-                }
-            ],
-        },
-        headers={"X-Idempotency-Key": "final-review-scene-revision"},
-    )
-
-    assert response.status_code == 200, response.text
-    payload = response.json()["data"]
-    assert payload["project"]["status"] == "chapter_blocked"
-    assert payload["project"]["current_chapter_id"] == chapter_id
-    assert payload["review_decision"]["decision"] == "request_scene_revision"
-    assert payload["backtrack_items"][0]["scene_id"] == first_scene.scene_id
-    session.expire_all()
-    db_project = session.get(StoryProject, project["project_id"])
-    assert db_project.current_chapter_id == chapter_id
-    assert db_project.approved_chapter_ids_json == []
-    backtrack = session.query(ProjectBacktrackItem).filter_by(scene_id=first_scene.scene_id, status="pending").one()
-    assert backtrack.problem_summary == "Add a consequence the protagonist cannot undo."
 
 
 def test_project_review_packet_reports_empty_body_reason(client, session) -> None:

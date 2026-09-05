@@ -26,7 +26,6 @@ backend/novel_system.db
 frontend/dist/
 frontend/node_modules/
 frontend/test-results/
-frontend/e2e-*.txt
 
 frontend-react/dist/
 frontend-react/node_modules/

@@ -111,7 +111,7 @@ for (const label of navBtns) {
 }
 
 // ---- E) Quality / Longform 渲染 + 主按钮存在性 ----
-for (const view of ["quality", "longform"]) {
+for (const view of ["quality"]) {
   ctx = `${view}/tide`;
   await gotoView("work-a", view);
   await page.waitForTimeout(900);

@@ -75,8 +75,6 @@ function WsPalette({ open, onClose, run, theme }) {
     cmds.push({ g: "导航 · 生产", icon: "BookOpen", label: "成稿中心", hint: "高级", kw: "manuscripts chenggao", run: () => run({ type: "go", view: "manuscripts" }) });
     cmds.push({ g: "导航 · 生产", icon: "Microscope", label: "写作台 · 深改姿态", hint: "原深改台", kw: "deepdesk shengai shenxiu", run: () => run({ type: "writer-action", action: "deep" }) });
     // 长篇控制塔已并入「章节编排」的「全书编排」（故事弧线 / 线索织布机 / 节奏镜头 / 全书体检）。
-    // 保留此别名，让仍按旧名搜索的作者能找到去处；目标改指 author，不再是已废的 longform 死视图。
-    cmds.push({ g: "导航 · 生产", icon: "Radar", label: "长篇控制塔 · 已并入章节编排", hint: "高级", kw: "longform changpian kongzhita 长篇控制塔 zhangjie bianpai quanshu huxian jiezou xiansuo", run: () => run({ type: "go", view: "author" }) });
     cmds.push({ g: "导航 · 运维", icon: "UploadCloud", label: "发布索引", hint: "高级", kw: "index fabu suoyin", run: () => run({ type: "go", view: "index" }) });
     cmds.push({ g: "导航 · 运维", icon: "FileInput", label: "互操作与导出", hint: "高级", kw: "interop hucaozuo daoru daochu", run: () => run({ type: "go", view: "interop" }) });
     cmds.push({ g: "导航 · 系统", icon: "Settings", label: "系统设置", hint: "设置", kw: "settings shezhi", run: () => run({ type: "go", view: "settings" }) });

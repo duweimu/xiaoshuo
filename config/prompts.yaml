@@ -1,71 +1,14 @@
 templates:
   # FE-ALIGN P6: 资料库半自动派生 — 从归档正文提取候选实体/时间线事件（不直接入库，进待办确认）
-  library_derive:
-    version: "2026-07-05.v2"
-    input_token_budget: 3200
-    system_prompt: |
-      You extract story-bible candidates from finished Chinese novel chapter text.
-      Work in two passes: first privately list every named location, item, faction, and concept the text mentions, including ones referred to only by alias or shorthand; then drop anything already covered by known_names (matching on name or alias) and keep the rest as NEW candidates.
-      Never invent facts not present in the text. Weak extraction under-reports far more often than it over-reports — favor completeness in the listing pass, and let the filtering pass keep the result precise.
-    task_prompt: |
-      Read chapter_text and known_names, then return new entity candidates and timeline events using the two-pass process above.
-      entities: name, kind (location|item|faction|concept), summary (one factual sentence, no more than 30 Chinese characters), aliases (other names or shorthand this entity is called by in the text; use an empty array if none).
-      timeline_events: label, time_label (copy the text's own time marker verbatim; use "" if the text gives none — never infer or invent one), short note.
-      Only surface items that are clearly named and story-relevant, but do not drop one just because it seems minor.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - entities
-        - timeline_events
-      properties:
-        entities:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-        timeline_events:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-  project_outline_plan:
-    version: "2026-07-04.v2"
-    input_token_budget: 3000
-    system_prompt: |
-      You convert a user's free-form novel outline into a reviewable chapter and scene plan.
-      Use only abstract reference-style guidance. Do not copy source-book wording, characters, settings, plot turns, or signature imagery.
-    task_prompt: |
-      This is a fast, coarse outline entry point separate from the snowflake-method workspace — keep every field at chapter/scene skeleton grain, not snowflake-step-9/10 depth. Do not produce character psychology, backstory, or foreshadow-lifecycle detail here; that belongs to the snowflake pipeline if the author chooses to use it.
-      Split the outline into chapters and scenes that can map directly to ChapterGoal and SceneCard.
-      Return chapter_goal, main_plot_push, emotional_target, ending_effect, must_not, and scenes.
-      Each scene must include scene_goal, beats_json, must_include_text, forbidden_text, exit_change, hook, target_length_band, and scene_type.
-      The user will approve this plan before any prose is drafted.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - chapters
-        - reference_safety
-      properties:
-        reference_safety:
-          type: array
-          items:
-            type: string
-        chapters:
-          type: array
-          items:
-            type: object
-            additionalProperties: true
-
   neutral_draft:
     version: "2026-08-20.v5"
     # A deterministic repair includes the rejected draft plus the same frozen
-    # scene facts. 2600 rejected a real 1455-char repair at 2774 estimated
-    # tokens before provider dispatch, then the old caller exposed the invalid
-    # original. Keep enough bounded headroom for one repair without weakening
-    # the scene-splitting guard for genuinely oversized inputs.
-    input_token_budget: 3200
+    # scene facts, so the drafting budget must hold draft + bundle twice over.
+    # 24000 is the measured scene-family value (see the block above); the old
+    # 2600/3200 pre-dated the one-token-per-CJK-character estimator and rejected
+    # real repairs before provider dispatch. The scene-splitting guard for
+    # genuinely oversized inputs is unchanged.
+    input_token_budget: 24000
     system_prompt: |
       You are drafting a neutral, continuity-safe web-novel scene.
       Follow the supplied bundle facts exactly and preserve causal clarity.
@@ -96,7 +39,7 @@ templates:
 
   hard_qc:
     version: "2026-07-04.v2"
-    input_token_budget: 2200
+    input_token_budget: 24000
     system_prompt: |
       You are a hard continuity and requirements checker for scene drafts.
       Fail any contradiction, missing hard constraint, or unsupported event.
@@ -155,40 +98,9 @@ templates:
           items:
             type: string
 
-  style_profile_extract:
-    version: "2026-07-05.v2"
-    input_token_budget: 1800
-    system_prompt: |
-      You extract transferable prose style features from examples or approved style rules.
-      Do not identify or imitate a protected author; describe reusable craft-level traits only.
-      Describe each trait as a concrete, reusable pattern the author could follow — never as a bare quality judgment (banned on their own: "fluent", "vivid", "engaging", "well-paced").
-    task_prompt: |
-      Convert the supplied samples into a Style Feature Contract. For each of the 7 keys below, write one concrete sentence describing the pattern actually observed — what the prose does, not how good it is:
-      rhythm (sentence-length pattern, e.g. short-short-long bursts), syntax (clause structure, inversion, fragment use), imagery (sensory channel and density), narrative_distance (close vs. distant POV cues), emotion_curve (how feeling escalates or resets across a passage), paragraph_density (information per paragraph), dialogue_ratio (dialogue-to-narration balance and tag style).
-      Look hard for at least one calibration_line and one banned_move the samples actually support before leaving either empty — but never fabricate one just to fill the slot.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - contract_version
-        - features
-      properties:
-        contract_version:
-          type: string
-        features:
-          type: object
-        calibration_lines:
-          type: array
-          items:
-            type: string
-        banned_moves:
-          type: array
-          items:
-            type: string
-
   style_draft:
     version: "2026-08-20.v7"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are drafting a stylistically tuned web-novel scene from a structured Style Feature Contract.
       Preserve bundle facts exactly, keep continuity safe, and apply reusable craft-level traits rather than copying any protected author.
@@ -233,7 +145,7 @@ templates:
 
   style_length_patch:
     version: "2026-08-20.v3"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You produce exact, minimal, segment-addressed edits for a Chinese novel scene whose reusable style and facts
       are already correct but whose visible-character count is outside a hard range. The labeled source contains
@@ -275,7 +187,7 @@ templates:
 
   style_salvage_patch:
     version: "2026-08-20.v1"
-    input_token_budget: 3000
+    input_token_budget: 24000
     system_prompt: |
       You perform one bounded, segment-addressed style salvage on an already approved Chinese novel scene after a
       complete style rewrite was rejected as extremely underlength. The labeled source contains synthetic markers
@@ -315,7 +227,7 @@ templates:
 
   soft_qc:
     version: "2026-07-04.v2"
-    input_token_budget: 1800
+    input_token_budget: 24000
     system_prompt: |
       You are a soft quality-control reviewer for prose polish and Style Feature Contract adherence.
       Focus on readability, cadence, emotional clarity, style-feature match, and whether the draft needs one controlled patch.
@@ -977,7 +889,7 @@ templates:
 
   scene_blueprint:
     version: "2026-07-04.v2"
-    input_token_budget: 2200
+    input_token_budget: 8000
     system_prompt: |
       You are a fiction planning editor.
       Before prose generation, produce a compact scene readability proposal explaining why this scene is worth reading.
@@ -1028,7 +940,7 @@ templates:
 
   chapter_story_architecture:
     version: "2026-07-04.v2"
-    input_token_budget: 2400
+    input_token_budget: 8000
     system_prompt: |
       You are a senior long-form fiction architect.
       Before scene drafting, define the chapter-level promise, escalation, reveal/payoff plan, character shift, and ending question.
@@ -1068,7 +980,7 @@ templates:
 
   character_pressure_blueprint:
     version: "2026-07-04.v2"
-    input_token_budget: 2400
+    input_token_budget: 8000
     system_prompt: |
       You are a severe character dramaturg.
       Before prose generation, identify the character pressure that must become visible on the page without explanatory summary.
@@ -1107,7 +1019,7 @@ templates:
 
   scene_literary_rewrite:
     version: "2026-07-04.v2"
-    input_token_budget: 3000
+    input_token_budget: 24000
     system_prompt: |
       You are rewriting a fiction scene toward near-final quality for a working author.
       Preserve all hard facts, names, continuity constraints, and source language.
@@ -1134,7 +1046,7 @@ templates:
 
   near_final_acceptance_review:
     version: "2026-07-04.v2"
-    input_token_budget: 2600
+    input_token_budget: 24000
     system_prompt: |
       You are a near-final acceptance editor for long-form Chinese fiction.
       Decide whether a scene is close enough for author line-editing; do not mark weak drafts as ready.
@@ -1187,7 +1099,7 @@ templates:
 
   chapter_near_final_review:
     version: "2026-07-04.v2"
-    input_token_budget: 3200
+    input_token_budget: 30000
     system_prompt: |
       You are a near-final acceptance editor for chapter-level long-form fiction.
       A chapter can fail even when individual scenes are readable if promise, escalation, payoff, or ending drive are weak.
@@ -1236,235 +1148,9 @@ templates:
         requires_human_review:
           type: boolean
 
-  writer_scene_diagnosis:
-    version: "2026-07-04.v2"
-    input_token_budget: 2200
-    system_prompt: |
-      You are a professional fiction editor diagnosing whether a scene works dramatically.
-      Focus on desire, obstacle, stakes, turn, subtext, irreversible change, scene necessity, reader hook, and continuity.
-      Also evaluate character agency, dialogue edge, information rhythm, imagery freshness, expression repetition, power shift, and ending drive.
-      Do not overwrite final prose; produce structured diagnosis and actionable revision briefs only.
-    task_prompt: |
-      Diagnose the supplied scene against drama_effectiveness_v1.
-      Write string fields in Chinese while preserving the schema keys.
-      The "Author Intent Context" JSON includes an active_lens object: label is your editorial role for this pass, focus_dimensions are the dimensions you own. Score all 16 dimensions in scores for completeness, but keep findings concentrated on focus_dimensions — only raise a finding outside them when it is severe enough for severity "blocker".
-      Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
-      Never leave findings empty: if every focus dimension already works, return at least one finding with severity "info" describing what works and why.
-      If any required rubric field is uncertain or missing, mark requires_human_review true and add a blocker finding.
-    structured_schema: &writer_diagnosis_schema
-      type: object
-      additionalProperties: false
-      required:
-        - overall_score
-        - scores
-        - findings
-        - revision_brief
-        - requires_human_review
-      properties:
-        overall_score:
-          type: number
-        scores:
-          type: object
-          additionalProperties: false
-          required:
-            - desire
-            - obstacle
-            - stakes
-            - turn
-            - subtext
-            - irreversible_change
-            - scene_necessity
-            - reader_hook
-            - continuity
-            - character_agency
-            - dialogue_edge
-            - information_rhythm
-            - imagery_freshness
-            - expression_repetition
-            - power_shift
-            - ending_drive
-          properties:
-            desire:
-              type: number
-            obstacle:
-              type: number
-            stakes:
-              type: number
-            turn:
-              type: number
-            subtext:
-              type: number
-            irreversible_change:
-              type: number
-            scene_necessity:
-              type: number
-            reader_hook:
-              type: number
-            continuity:
-              type: number
-            character_agency:
-              type: number
-            dialogue_edge:
-              type: number
-            information_rhythm:
-              type: number
-            imagery_freshness:
-              type: number
-            expression_repetition:
-              type: number
-            power_shift:
-              type: number
-            ending_drive:
-              type: number
-        findings:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              - dimension
-              - severity
-              - issue
-              - recommendation
-              - evidence_excerpt
-              - evidence_location
-              - why_it_matters
-            properties:
-              dimension:
-                type: string
-              severity:
-                type: string
-              issue:
-                type: string
-              recommendation:
-                type: string
-              evidence_excerpt:
-                type: string
-              evidence_location:
-                type: string
-              why_it_matters:
-                type: string
-        revision_brief:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              - dimension
-              - action
-              - priority
-            properties:
-              dimension:
-                type: string
-              action:
-                type: string
-              priority:
-                type: string
-        requires_human_review:
-          type: boolean
-
-  writer_scene_revision:
-    version: "2026-07-04.v2"
-    input_token_budget: 2600
-    system_prompt: |
-      You are preparing a candidate revision for a fiction author.
-      Keep the candidate separate from the approved final text; never claim it has been applied.
-    task_prompt: |
-      Rewrite the supplied scene using the writer diagnosis and revision brief.
-      Preserve continuity and source language. If the source is Chinese, output Chinese prose.
-      Address every revision_brief item: each one must show up as a concrete change reflected in changed_dimensions, or be named in diff_summary with a one-line reason it was not applied — do not silently skip an item.
-      Leave passages the diagnosis did not flag untouched. This is a targeted revision, not a full pass — do not polish sentences outside the flagged dimensions.
-      Return a complete revised scene as revised_text at a length comparable to the source (not a shortened summary), not advice appended to the old text.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - revised_text
-        - diff_summary
-        - changed_dimensions
-        - rewrite_strategy
-      properties:
-        revised_text:
-          type: string
-        diff_summary:
-          type: string
-        changed_dimensions:
-          type: array
-          items:
-            type: string
-        rewrite_strategy:
-          type: string
-
-  writer_chapter_diagnosis:
-    version: "2026-07-04.v2"
-    input_token_budget: 3200
-    system_prompt: |
-      You are a professional fiction editor diagnosing chapter-level dramatic effectiveness.
-      Focus on chapter promise, scene necessity, rhythm breakpoints, continuity, escalation, ending hook, and missing scene functions.
-      Also evaluate character agency, dialogue edge, information rhythm, imagery freshness, expression repetition, power shift, and ending drive.
-    task_prompt: |
-      Diagnose the assembled or aggregate chapter against drama_effectiveness_v1.
-      Write string fields in Chinese while preserving the schema keys.
-      The "Author Intent Context" JSON includes an active_lens object: label is your editorial role for this pass, focus_dimensions are the dimensions you own. Score all 16 dimensions in scores for completeness, but keep findings concentrated on focus_dimensions — only raise a finding outside them when it is severe enough for severity "blocker".
-      Before writing findings, walk the chapter scene by scene from start to end — it does not end after the opening. At least one finding's evidence_location must anchor in the back half of the chapter; do not let every finding cite only the opening.
-      Every finding must cite concrete source-text evidence, where it appears, and why it matters to the reader.
-      Never leave findings empty: if every focus dimension already works, return at least one finding with severity "info" describing what works and why.
-      If the chapter lacks enough source text or a required dimension is unclear, mark requires_human_review true.
-    structured_schema: *writer_diagnosis_schema
-
-  writer_chapter_revision:
-    version: "2026-07-04.v2"
-    input_token_budget: 3600
-    system_prompt: |
-      You are preparing a chapter-level candidate revision plan for a fiction author.
-      Keep the candidate separate from approved final text; never claim it has been applied.
-      Do not rewrite the whole chapter unless explicitly asked. Prefer a concise plan plus selected high-impact passage rewrites.
-    task_prompt: |
-      Use the writer diagnosis and revision brief to produce a chapter revision plan.
-      Write all strings in Chinese while preserving schema keys.
-      Address every revision_brief item in revision_plan, or state in diff_summary why it is skipped — do not silently drop items.
-      Preserve continuity and source language. Select 3-6 of the highest-impact passages for selected_rewrite_passages (fewer only if the chapter genuinely has fewer issues) — do not try to cover the whole chapter this way. Each source_excerpt should be the minimum text needed to anchor the location (roughly under 150 characters); spend output budget on revised_text, not long quotations.
-      Do not touch passages the diagnosis did not flag.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - revision_plan
-        - selected_rewrite_passages
-        - diff_summary
-      properties:
-        revision_plan:
-          type: array
-          items:
-            type: string
-        selected_rewrite_passages:
-          type: array
-          items:
-            type: object
-            additionalProperties: false
-            required:
-              - source_excerpt
-              - revised_text
-              - reason
-            properties:
-              source_excerpt:
-                type: string
-              revised_text:
-                type: string
-              reason:
-                type: string
-        diff_summary:
-          type: string
-        changed_dimensions:
-          type: array
-          items:
-            type: string
-        rewrite_strategy:
-          type: string
-
   writer_passage_patch:
     version: "2026-07-04.v2"
-    input_token_budget: 2400
+    input_token_budget: 8000
     system_prompt: |
       You are preparing a local passage patch for a fiction author.
       The patch is a candidate only: do not claim it has been applied, and do not rewrite unrelated text.
@@ -1517,46 +1203,9 @@ templates:
         manual_only:
           type: boolean
 
-  author_structure_extract:
-    version: "2026-07-05.v2"
-    input_token_budget: 2600
-    system_prompt: |
-      You are a Chinese fiction dramaturg reading an author's free draft.
-      Extract only candidate structure understanding; do not write prose and do not claim the candidate has been applied.
-      Treat a scene boundary as a break in viewpoint, location, or time — use that as your unit of analysis, not paragraph breaks.
-      Keep uncertain inferences explicit instead of turning ambiguous material into hard facts.
-    task_prompt: |
-      Read the supplied author draft and metadata, then propose a writer-brief candidate for the target object.
-      Write all string values in Chinese while preserving English schema keys.
-      Use only the field list for the actual target type below, and never mix the two vocabularies in one candidate_brief.
-      If the target is a scene, candidate_brief should use scene brief fields such as character_desire, obstacle, stakes,
-      secret_or_misunderstanding, subtext, irreversible_change, reader_question, choice_under_pressure, power_shift,
-      new_information, emotional_turn, image_anchor, and reader_aftertaste.
-      If the target is a chapter, candidate_brief should use chapter brief fields such as core_promise, plot_movement,
-      character_shift, chapter_question, ending_aftertaste, chapter_promise, escalation_path, relationship_delta,
-      reveal_or_reversal, payoff_target, and ending_question.
-      Do not include final prose, and do not overwrite existing cards.
-      uncertainty_notes: add one entry for each field you had to infer from thin or ambiguous evidence; if the draft clearly supports every field, return an empty array instead of inventing a note.
-    structured_schema:
-      type: object
-      additionalProperties: false
-      required:
-        - candidate_brief
-        - uncertainty_notes
-        - rationale
-      properties:
-        candidate_brief:
-          type: object
-        uncertainty_notes:
-          type: array
-          items:
-            type: string
-        rationale:
-          type: string
-
   author_proposal_generate:
     version: "2026-07-04.v2"
-    input_token_budget: 3200
+    input_token_budget: 30000
     system_prompt: |
       You are a Chinese fiction revision partner for a working author.
       Generate one concrete proposal for the current author draft, but preserve the author's intent and do not invent story-specific props, names, places, or lore unless they already appear in the supplied draft or metadata.
@@ -1588,7 +1237,7 @@ templates:
 
   writer_deep_review:
     version: "2026-07-07.v3"
-    input_token_budget: 3000
+    input_token_budget: 30000
     system_prompt: |
       You are a severe Chinese fiction revision editor for a working author.
       Diagnose literary revision needs without inflating scores. Ordinary usable prose should not receive excellent scores.

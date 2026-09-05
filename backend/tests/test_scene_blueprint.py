@@ -20,7 +20,6 @@ def _auto_online_pipeline(monkeypatch):
     _install_online_pipeline(monkeypatch)
 
 
-
 CHAPTER_ID = "BP100"
 SCENE_ID = "BP100_SC01"
 PROJECT_ID = "P_BP100"
@@ -74,67 +73,6 @@ def _seed_scene(session) -> None:
     )
     session.add(SceneRunState(scene_id=SCENE_ID, scene_status="ready"))
     session.commit()
-
-
-def test_literary_blueprint_endpoint_persists_latest_and_supersedes_previous(client, session) -> None:
-    _seed_scene(session)
-
-    first = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/literary-blueprint",
-        headers={"X-Idempotency-Key": "blueprint-first"},
-    )
-    assert first.status_code == 200
-    first_payload = first.json()["data"]
-
-    assert first_payload["scene_id"] == SCENE_ID
-    assert first_payload["status"] == "accepted"
-    assert set(first_payload["blueprint_json"]) == {
-        "visible_desire",
-        "forced_choice",
-        "price_paid",
-        "information_release",
-        "relationship_turn",
-        "image_anchor",
-        "ending_action",
-        "next_scene_pull",
-        "anti_summary_rule",
-    }
-    assert first_payload["blueprint_json"]["forced_choice"]
-    assert first_payload["blueprint_json"]["ending_action"]
-
-    second = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/literary-blueprint",
-        headers={"X-Idempotency-Key": "blueprint-second"},
-    )
-    assert second.status_code == 200
-    second_payload = second.json()["data"]
-
-    assert second_payload["row_id"] != first_payload["row_id"]
-    assert session.get(SceneBlueprint, first_payload["row_id"]).status == "superseded"
-    assert session.get(SceneBlueprint, second_payload["row_id"]).status == "accepted"
-
-
-def test_workbench_and_bundle_show_the_blueprint_used_for_generation(client, session) -> None:
-    _seed_scene(session)
-    blueprint = client.post(
-        f"/api/v1/scenes/{SCENE_ID}/literary-blueprint",
-        headers={"X-Idempotency-Key": "blueprint-workbench"},
-    ).json()["data"]
-
-    workbench = client.get(f"/api/v1/scenes/{SCENE_ID}/workbench").json()["data"]
-    # 离线确定性蓝图（由场景 image_anchor 映射「the still teacup」）已退役；本用例的意图
-    # 是「workbench 展示的是用于生成的那份蓝图」——改为断言 workbench 与生成产物同源。
-    assert workbench["literary_blueprint"]["row_id"] == blueprint["row_id"]
-    assert (
-        workbench["literary_blueprint"]["blueprint_json"]["image_anchor"]
-        == blueprint["blueprint_json"]["image_anchor"]
-    )
-
-    bundle = BundleBuilder(session).build(SCENE_ID)
-    snapshot = bundle["snapshot"]
-    assert snapshot["source_version_refs"]["scene_blueprint_row_id"] == blueprint["row_id"]
-    assert "scene_blueprint" in snapshot["inline_digests"]
-    assert "forced_choice" in snapshot["inline_digests"]["scene_blueprint"]
 
 
 def test_legacy_v1_blueprint_rows_still_surface_in_workbench_and_bundle(client, session) -> None:

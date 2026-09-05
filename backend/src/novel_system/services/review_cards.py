@@ -27,11 +27,7 @@ CARD_STATES = ("open", "resolved", "snoozed")
 
 # legacy item_type → 卡片 kind 的展示默认（响应映射，不回写行）
 LEGACY_KIND_DEFAULTS = {
-    "style_observation": "decision",
-    "style_rule_set": "decision",
-    "banned_rule_cluster": "risk",
     "author_preference_profile": "decision",
-    "longform_structure_guidance": "decision",
 }
 
 

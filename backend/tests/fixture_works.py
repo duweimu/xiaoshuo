@@ -204,179 +204,20 @@ def _seed_work_a_library(session: Session) -> None:
 
 
 # 设定冲突夹具（结构对齐原 LF2_CANON conflict 条目；locked 条目不建 finding）
-_WORK_A_CANON_CONFLICTS = [
-    {
-        "finding_id": "c1", "chapter_no": 5, "kind": "drift", "severity": "block",
-        "text": "第 5 章「属性乙」与第 1 章「28 岁」冲突",
-        "meta": {"subject": "角色甲 · 年龄", "value": "28 岁", "source": 1, "drift": True},
-    },
-    {
-        "finding_id": "c2", "chapter_no": 7, "kind": "drift", "severity": "warn",
-        "text": "第 7 章写「材质乙」，与第 1 章「铜」冲突",
-        "meta": {"subject": "道具甲 · 材质", "value": "铜", "source": 1, "drift": True},
-    },
-    {
-        "finding_id": "c3", "chapter_no": 5, "kind": "drift", "severity": "warn",
-        "text": "第 5 章「同一周内」与第 3 章「三天后」冲突",
-        "meta": {"subject": "时间线 · 事件甲", "value": "第三天", "source": 3, "drift": False},
-    },
-]
-
-
-def _seed_work_a_audit(session: Session) -> None:
-    """审计链路夹具：canon 冲突 → ChapterAuditFinding（同事务产 decision/risk 卡）。"""
-    from novel_system.db.models import ChapterAuditFinding
-    from novel_system.services.longform_tower import LongformTowerService
-
-    session.execute(delete(ChapterAuditFinding).where(ChapterAuditFinding.project_id == "work-a"))
-    session.flush()
-    chapters = session.execute(
-        select(ChapterGoal)
-        .where(ChapterGoal.project_id == "work-a", ChapterGoal.trashed_flag == 0)
-        .order_by(ChapterGoal.display_order.asc())
-    ).scalars().all()
-    by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
-    tower = LongformTowerService(session)
-    for item in _WORK_A_CANON_CONFLICTS:
-        chapter = by_no.get(item["chapter_no"])
-        if chapter is None:
-            continue
-        tower.create_finding(
-            "work-a",
-            chapter.chapter_id,
-            {
-                "finding_id": item["finding_id"],
-                "kind": item["kind"],
-                "severity": item["severity"],
-                "text": item["text"],
-                "meta": item["meta"],
-            },
-        )
-    session.flush()
 
 
 # 扩展审计层夹具（空降/断链/线索不公平；ORM 直插，不产卡；FE 形状存 evidence）
-_WORK_A_LF3_FINDINGS = [
-    ("o1", "unplanted_reveal", "block", 7, "揭示甲缺乏铺垫",
-     {"reveal": "揭示甲缺乏铺垫", "revealCh": 7, "sev": "high",
-      "why": "第 7 章出现揭示甲，但前六章无任何铺垫。",
-      "fix": "在第 1–6 章补一处铺垫。"}),
-    ("o2", "unplanted_reveal", "warn", 8, "道具乙首次出现即被使用",
-     {"reveal": "道具乙首次出现即被使用", "revealCh": 8, "sev": "medium",
-      "why": "第 8 章直接使用道具乙，此前从未出现。",
-      "fix": "在第 6 章补一个镜头，或改用已知途径。"}),
-    ("k1", "causal_break", "warn", 7, "原因甲 → 结果甲",
-     {"cause": "原因甲", "causeCh": 3, "effect": "结果甲", "effectCh": 7, "load": True, "status": "ok"}),
-    ("k2", "causal_break", "warn", 8, "原因乙 → 结果乙",
-     {"cause": "原因乙", "causeCh": 6, "effect": "结果乙", "effectCh": 8, "load": True, "status": "ok"}),
-    ("k3", "causal_break", "block", 8, "（缺前因）→ 第 8 章结果丙",
-     {"cause": "前因丙", "causeCh": None, "effect": "第 8 章结果丙", "effectCh": 8, "load": True, "status": "break",
-      "why": "第 8 章出现结果丙，但全书从未交代其前因。",
-      "fix": "在第 5–7 章补一处前因，或改写本章。"}),
-    ("q1", "unfair_clue", "warn", 7, "悬念甲",
-     {"q": "悬念甲", "truth": "真相甲", "planted": 2, "reveal": 7, "knows": ["角色甲", "角色乙"], "fair": True}),
-    ("q2", "unfair_clue", "warn", 1, "悬念乙",
-     {"q": "悬念乙", "truth": "真相乙", "planted": 1, "reveal": None, "knows": ["（无）"], "fair": True, "pending": True}),
-    ("q3", "unfair_clue", "block", 2, "悬念丙",
-     {"q": "悬念丙", "truth": "真相丙", "planted": 2, "reveal": None, "knows": ["角色乙"], "fair": False,
-      "note": "线索第 2 章已埋，但至今未给读者任何可推理的依据。"}),
-    ("q4", "unfair_clue", "block", 8, "悬念丁",
-     {"q": "悬念丁", "truth": "真相丁", "planted": None, "reveal": 20, "knows": ["角色戊"], "fair": False,
-      "note": "计划第 20 章揭晓，但目前零铺垫。"}),
-]
-
-
-def _seed_work_a_lf3_findings(session: Session) -> None:
-    """扩展审计层夹具 → ChapterAuditFinding（ORM 直插，不产卡）。"""
-    from novel_system.db.models import ChapterAuditFinding
-
-    chapters = session.execute(
-        select(ChapterGoal)
-        .where(ChapterGoal.project_id == "work-a", ChapterGoal.trashed_flag == 0)
-        .order_by(ChapterGoal.display_order.asc())
-    ).scalars().all()
-    by_no = {index + 1: chapter for index, chapter in enumerate(chapters)}
-    last = chapters[-1] if chapters else None
-    for fe_id, kind, severity, chapter_no, text, fe in _WORK_A_LF3_FINDINGS:
-        chapter = by_no.get(chapter_no) or last
-        if chapter is None:
-            continue
-        session.add(
-            ChapterAuditFinding(
-                finding_id=f"AUD_FIX_{fe_id.upper()}",
-                project_id="work-a",
-                chapter_id=chapter.chapter_id,
-                kind=kind,
-                severity=severity,
-                text=text,
-                evidence=json.dumps({"fe": {"id": fe_id, **fe}}, ensure_ascii=False),
-                status="open",
-            )
-        )
-    session.flush()
 
 
 # 锚点库夹具（悬念债/设定锚点/故事线/人物弧线 → LongformAnchor）
-_WORK_A_ANCHORS = [
-    ("c1", "trait",    "角色甲 · 年龄 = 28 岁", {"subject": "角色甲 · 年龄", "value": "28 岁", "source": 1, "status": "conflict", "drift": True, "conflictCh": 5, "conflictText": "第 5 章「属性乙」与第 1 章「28 岁」冲突", "critical": True, "pinned": True}),
-    ("c2", "setting",  "道具甲 · 材质 = 铜", {"subject": "道具甲 · 材质", "value": "铜", "source": 1, "status": "conflict", "drift": True, "conflictCh": 7, "conflictText": "第 7 章写「材质乙」，与第 1 章「铜」冲突", "critical": False, "pinned": False}),
-    ("c3", "timeline", "时间线 · 事件甲 = 第三天", {"subject": "时间线 · 事件甲", "value": "第三天", "source": 3, "status": "conflict", "drift": False, "conflictCh": 5, "conflictText": "第 5 章「同一周内」与第 3 章「三天后」冲突", "critical": False, "pinned": False}),
-    ("c4", "trait",    "角色乙 · 身份 = 属性丁", {"subject": "角色乙 · 身份", "value": "属性丁", "source": 6, "status": "locked", "critical": True, "pinned": True}),
-    ("c5", "fact",     "编号甲 · 含义 = 核心谜面", {"subject": "编号甲 · 含义", "value": "核心谜面", "source": 1, "status": "locked", "critical": True, "pinned": True}),
-    ("c6", "fact",     "叙事 · 人称 = 第三人称限知", {"subject": "叙事 · 人称", "value": "第三人称限知", "source": 1, "status": "locked", "critical": False, "pinned": False}),
-    ("l1", "promise", "悬念债甲", {"title": "悬念债甲", "setup": 1, "payoff": 12, "state": "open", "pri": "high", "pinned": True, "note": "核心谜面占位。"}),
-    ("l2", "promise", "悬念债乙", {"title": "悬念债乙", "setup": 3, "payoff": 10, "state": "open", "pri": "high", "pinned": True, "note": "关键物证占位。"}),
-    ("l6", "promise", "悬念债丙", {"title": "悬念债丙", "setup": 2, "payoff": 6, "state": "open", "pri": "high", "pinned": False, "note": "已越过当前章仍未回收。"}),
-    ("l3", "promise", "悬念债丁", {"title": "悬念债丁", "setup": 4, "payoff": 20, "state": "open", "pri": "medium", "pinned": False, "note": "可推到结尾区段。"}),
-    ("l4", "promise", "悬念债戊", {"title": "悬念债戊", "setup": 4, "payoff": None, "state": "open", "pri": "medium", "pinned": False, "note": "尚未排定回收章。"}),
-    ("l5", "promise", "悬念债己", {"title": "悬念债己", "setup": 1, "payoff": 8, "state": "closing", "pri": "low", "pinned": False, "note": "本章（第 8 章）正在回收。"}),
-    ("main", "thread", "主线 · 线索甲", {"name": "主线 · 线索甲", "short": "主线", "color": "crimson", "segs": [[1, 8]]}),
-    ("sub",  "thread", "副线 · 线索乙", {"name": "副线 · 线索乙", "short": "副线", "color": "slate", "segs": [[2, 2], [4, 4]]}),
-    ("anti", "thread", "对抗线 · 角色乙", {"name": "对抗线 · 角色乙", "short": "对抗线", "color": "ink", "segs": [[5, 8]]}),
-    ("love", "thread", "感情线 · 角色甲×角色丁", {"name": "感情线 · 角色甲×角色丁", "short": "感情线", "color": "gold", "segs": [[1, 1], [4, 4], [6, 6], [8, 8]]}),
-    ("rv1", "setting", "环境母题占位", {"text": "环境母题占位", "ch": 2, "tone": "slate", "reason": "氛围细节，相关章节才需要", "pool": "retrieve"}),
-    ("rv2", "setting", "次要设定占位", {"text": "次要设定占位", "ch": 1, "tone": "slate", "reason": "次要设定，需要时召回", "pool": "retrieve"}),
-    ("rv3", "trait",   "角色丁背景占位", {"text": "角色丁背景占位", "ch": 1, "tone": "slate", "reason": "角色丁在场时召回", "pool": "retrieve"}),
-    ("rv4", "fact",    "已回收线索占位", {"text": "已回收线索占位", "ch": 1, "tone": "sage", "reason": "已结清，仅作背景", "pool": "retrieve"}),
-    ("rv5", "timeline", "时间线细节占位", {"text": "时间线细节占位", "ch": 3, "tone": "slate", "reason": "时间线细节", "pool": "retrieve"}),
-    ("arc-a", "arc", "角色甲 · 主角弧线", {"name": "角色甲", "role": "主角", "color": "crimson", "state": "阶段占位 · 0.75 ↑", "points": [{"ch": 1, "v": 0.30, "label": "起点"}, {"ch": 2, "v": 0.35}, {"ch": 3, "v": 0.40, "label": "转折一"}, {"ch": 4, "v": 0.45}, {"ch": 5, "v": 0.55}, {"ch": 6, "v": 0.62}, {"ch": 7, "v": 0.70, "label": "转折二"}, {"ch": 8, "v": 0.75, "label": "当前", "current": True}]}),
-    ("arc-b", "arc", "角色乙 · 对立弧线", {"name": "角色乙", "role": "对立", "color": "slate", "state": "阶段占位 · 0.48 ↓", "points": [{"ch": 1, "v": 0.80, "label": "起点"}, {"ch": 2, "v": 0.78}, {"ch": 3, "v": 0.74}, {"ch": 4, "v": 0.70}, {"ch": 5, "v": 0.65, "label": "裂缝"}, {"ch": 6, "v": 0.58}, {"ch": 7, "v": 0.55}, {"ch": 8, "v": 0.48, "label": "当前", "current": True}]}),
-    ("arc-c", "arc", "角色丁 · 次要弧线", {"name": "角色丁", "role": "次要", "color": "gold", "state": "自第 6 章无成长点", "stalledFrom": 6, "points": [{"ch": 1, "v": 0.50, "label": "起点"}, {"ch": 4, "v": 0.55, "label": "提示"}, {"ch": 6, "v": 0.62}, {"ch": 8, "v": 0.62, "label": "当前", "current": True}]}),
-]
-
-
-def _seed_work_a_anchors(session: Session) -> None:
-    """锚点库夹具（悬念债/设定/故事线/弧线 → LongformAnchor）。"""
-    from novel_system.db.models import LongformAnchor
-
-    session.execute(delete(LongformAnchor).where(LongformAnchor.project_id == "work-a"))
-    session.flush()
-    for fe_id, kind, text, fe in _WORK_A_ANCHORS:
-        session.add(
-            LongformAnchor(
-                anchor_id=f"ANC_FIX_{fe_id.upper().replace('-', '_')}",
-                project_id="work-a",
-                kind=kind,
-                text=text,
-                source_ref=f"ch{fe.get('source')}" if fe.get("source") else None,
-                note=json.dumps({"fe": {"id": fe_id, **fe}}, ensure_ascii=False),
-                # 可检索池（记忆预算的 retrieve 态）= faded（淡出，可重新钉入）
-                status="faded" if fe.get("pool") == "retrieve" else "pinned",
-            )
-        )
-    session.flush()
 
 
 def cleanup_fixture_works(session: Session) -> None:
     from novel_system.db.models import (
-        ChapterAuditFinding,
-        ChapterContract,
         ChapterState,
         LibraryEntity,
         LibraryRelation,
-        LongformAnchor,
         OutlinePlan,
-        ProjectBacktrackItem,
         SceneBundle,
         SceneRunState,
         SnowflakeArtifact,
@@ -385,7 +226,6 @@ def cleanup_fixture_works(session: Session) -> None:
         SnowflakeRevisionLink,
         SnowflakeScenePlan,
         SnowflakeSceneTriageItem,
-        StagedBackfill,
         StoryCharacter,
         TimelineEvent,
     )
@@ -412,26 +252,9 @@ def cleanup_fixture_works(session: Session) -> None:
             )
         ).scalars()
     ]
-    if scene_ids or chapter_ids:
-        session.execute(
-            delete(StagedBackfill).where(
-                StagedBackfill.scene_id.in_(scene_ids or [""])
-                | StagedBackfill.chapter_id.in_(chapter_ids or [""])
-            )
-        )
     if chapter_ids:
         session.execute(
             delete(ChapterState).where(ChapterState.chapter_id.in_(chapter_ids))
-        )
-        # These rows now carry real chapter foreign keys.  They must be
-        # removed before the fixture catalog can replace its ChapterGoal rows.
-        session.execute(
-            delete(ChapterAuditFinding).where(
-                ChapterAuditFinding.chapter_id.in_(chapter_ids)
-            )
-        )
-        session.execute(
-            delete(ChapterContract).where(ChapterContract.chapter_id.in_(chapter_ids))
         )
 
     session.execute(delete(SceneCard).where(SceneCard.project_id.in_(FIXTURE_WORK_IDS)))
@@ -448,8 +271,6 @@ def cleanup_fixture_works(session: Session) -> None:
         LibraryEntity,
         TimelineEvent,
         StoryCharacter,
-        LongformAnchor,
-        ProjectBacktrackItem,
         OutlinePlan,
         ProjectWritingStats,
     ):
@@ -605,9 +426,6 @@ def _seed_work(
     if project_id == "work-a":
         _seed_work_a_review_cards(session)
         _seed_work_a_library(session)
-        _seed_work_a_audit(session)
-        _seed_work_a_lf3_findings(session)
-        _seed_work_a_anchors(session)
 
     WritingStatsService(session).seed_stats(
         project_id,

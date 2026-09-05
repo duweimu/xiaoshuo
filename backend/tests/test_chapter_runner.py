@@ -151,7 +151,6 @@ def _install_fake_runner(monkeypatch, *, blocked_scene: str | None = None, block
             return {**shared["gate"], "chapter_id": chapter_id}
 
     monkeypatch.setattr("novel_system.services.chapter_runner.Orchestrator", FakeOrchestrator)
-    monkeypatch.setattr("novel_system.services.chapter_runner.ChapterRuntimeService", FakeChapterRuntimeService)
     return shared
 
 
@@ -693,70 +692,6 @@ def test_prepare_full_run_restarts_resolved_blocked_job(client, session, monkeyp
     assert prepared["latest_error"] is None
 
 
-def test_chapter_run_full_persists_completed_scenes_when_blocked_by_backfill_and_resumes_from_next_scene(
-    client,
-    session,
-    monkeypatch,
-) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2)
-    _create_scene(client, "CH900", "CH900_SC03", 3, is_chapter_last=1)
-    shared = _install_fake_runner(monkeypatch, blocked_scene="CH900_SC02", block_kind="backfill")
-
-    blocked_response = client.post(
-        "/api/v1/chapters/CH900/run/full",
-        headers={"X-Idempotency-Key": "chapter-run-backfill"},
-    )
-
-    assert blocked_response.status_code == 200
-    blocked = blocked_response.json()["data"]
-    assert blocked["status"] == "blocked"
-    assert blocked["current_scene_id"] == "CH900_SC02"
-    assert blocked["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02"]
-    assert blocked["blocked_scene_id"] == "CH900_SC02"
-    assert blocked["latest_error"] == {
-        "code": "CHAPTER_RUN_BACKFILL_PENDING",
-        "message": "chapter run is blocked by pending staged backfill",
-        "author_action": {
-            "title": "章节有待回填内容",
-            "message": "当前章节还有标记内容等待回填，先处理这些占位，再继续章节起草。",
-            "target_view": "workbench",
-            "target_ref": "chapter:CH900",
-            "primary_button_label": "去场景工作台",
-            "evidence_summary": ["章节：CH900", "状态：待回填"],
-        },
-    }
-
-    status_response = client.get("/api/v1/chapters/CH900/run-status")
-    assert status_response.status_code == 200
-    assert status_response.json()["data"]["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02"]
-
-    job = session.query(ChapterRunJob).filter_by(chapter_id="CH900").one()
-    blocked_job_id = job.job_id
-    assert job.status == "blocked"
-
-    shared["gate"] = {
-        **shared["gate"],
-        "chapter_backfill_pending_count": 0,
-        "aggregate_block_reason": "none",
-        "staged_backfill_items": [],
-    }
-    shared["calls"].clear()
-    _install_fake_runner(monkeypatch)
-
-    resumed_response = client.post(
-        "/api/v1/chapters/CH900/run/full",
-        headers={"X-Idempotency-Key": "chapter-run-backfill-resume"},
-    )
-
-    assert resumed_response.status_code == 200
-    resumed = resumed_response.json()["data"]
-    assert resumed["job_id"] == blocked_job_id
-    assert resumed["status"] == "completed"
-    assert resumed["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02", "CH900_SC03"]
-
-
 def test_chapter_run_full_reuses_completed_job_progress_when_new_scene_is_added(client, monkeypatch) -> None:
     _create_chapter(client, "CH900")
     _create_scene(client, "CH900", "CH900_SC01", 1)
@@ -787,38 +722,6 @@ def test_chapter_run_full_reuses_completed_job_progress_when_new_scene_is_added(
     assert resumed["status"] == "completed"
     assert resumed["completed_scene_ids"] == ["CH900_SC01", "CH900_SC02", "CH900_SC03"]
     assert shared["calls"] == ["CH900_SC03"]
-
-
-def test_chapter_run_status_reconciles_removed_blocked_scene(client, session, monkeypatch) -> None:
-    _create_chapter(client, "CH900")
-    _create_scene(client, "CH900", "CH900_SC01", 1)
-    _create_scene(client, "CH900", "CH900_SC02", 2, is_chapter_last=1)
-    _install_fake_runner(monkeypatch, blocked_scene="CH900_SC02", block_kind="backfill")
-
-    blocked_response = client.post(
-        "/api/v1/chapters/CH900/run/full",
-        headers={"X-Idempotency-Key": "chapter-run-blocked-scene-remove"},
-    )
-
-    assert blocked_response.status_code == 200
-    blocked = blocked_response.json()["data"]
-    assert blocked["status"] == "blocked"
-    assert blocked["blocked_scene_id"] == "CH900_SC02"
-
-    removed_scene = session.get(SceneCard, "CH900_SC02")
-    assert removed_scene is not None
-    removed_scene.trashed_flag = 1
-    session.commit()
-
-    status_response = client.get("/api/v1/chapters/CH900/run-status")
-
-    assert status_response.status_code == 200
-    status_payload = status_response.json()["data"]
-    assert status_payload["status"] == "completed"
-    assert status_payload["scene_ids"] == ["CH900_SC01"]
-    assert status_payload["blocked_scene_id"] is None
-    assert status_payload["current_scene_id"] == "CH900_SC01"
-    assert status_payload["latest_error"] is None
 
 
 def test_chapter_run_status_preserves_failed_job_visibility(client, session) -> None:

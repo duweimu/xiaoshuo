@@ -7,13 +7,12 @@ import pytest
 from alembic import command
 from alembic.config import Config
 
-from novel_system.tools.database_preflight import inspect_database
 
 
 REAL_ONLY_HEAD = "20260717_0075"
 CHAPTERING_HEAD = "20260725_0076"
 MERGED_HEAD = "20260802_0077"
-CURRENT_HEAD = "20260818_0082"
+CURRENT_HEAD = "20260904_0083"
 
 
 def _config() -> Config:
@@ -85,8 +84,6 @@ def test_published_real_only_head_remains_upgradeable_to_single_head(
         assert connection.execute(
             "SELECT version_num FROM alembic_version"
         ).fetchall() == [(CURRENT_HEAD,)]
-    result = inspect_database(database_path, CURRENT_HEAD)
-    assert result["ready"] is True, result
 
 
 def test_merge_repairs_historical_0076_membership_and_installs_fk(

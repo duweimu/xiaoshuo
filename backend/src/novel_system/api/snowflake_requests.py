@@ -31,6 +31,12 @@ class SnowflakeStepGenerateRequest(StrictRequestModel):
     )
     draft_override: BoundedJsonObject | None = None
     require_llm: bool | None = None
+    # React 工作台的结构化生成通道（ws-snow.jsx ``structuredGenerate``）用它标记
+    # 触发入口：fe_scaffold_ai / fe_candidate_adopt / fe_scene_focus_ai /
+    # fe_char_focus_ai。它只是随 step-run 落库的出处标签，不选择生成分支；
+    # 缺了这个字段整个 envelope 就 422，作者的每一次 AI 生成点击都被校验层挡下。
+    # 界定成小写下划线短标识，而不是把 StrictRequestModel 放开成任意忽略字段。
+    source: str | None = Field(default=None, max_length=64, pattern=r"^[a-z0-9_]+$")
 
 
 class LegacySnowflakeStepGenerateRequest(StrictRequestModel):

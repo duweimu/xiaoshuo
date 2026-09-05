@@ -30,16 +30,9 @@ from novel_system.services.story_slots import (
 )
 from novel_system.services.hash_engine import canonical_json
 from novel_system.services.narrative_position import NarrativePositionService
-from novel_system.services.project_backtracks import ProjectBacktrackService
 
 EXECUTION_CONTRACT_VERSION = "scene_execution_contract_v1"
 logger = logging.getLogger(__name__)
-
-
-@dataclass(slots=True)
-class SceneCausalReadinessAssessment:
-    warning: str | None = None
-    diagnostics: list[dict[str, Any]] = field(default_factory=list)
 
 
 class SceneExecutionContractService:
@@ -156,17 +149,8 @@ class SceneExecutionContractService:
         blueprint: SceneBlueprint | None,
         reference_rules: dict[str, list[str]],
     ) -> tuple[dict[str, Any], list[str], list[str]]:
-        """组装契约 payload 并追加因果就绪 advisory，返回 (payload, missing_fields, blocking_fields)。"""
+        """组装契约 payload，返回 (payload, missing_fields, blocking_fields)。"""
         payload, missing_fields = self._payload(scene, chapter, blueprint, reference_rules)
-
-        # §4 Causal readiness — check reverse causal skeleton prerequisites.
-        causal_assessment = self._check_causal_readiness(scene, project)
-        if causal_assessment is not None and causal_assessment.warning:
-            payload["causal_readiness_warning"] = causal_assessment.warning
-            missing_fields.append("causal_prerequisite(advisory)")
-        if causal_assessment is not None and causal_assessment.diagnostics:
-            payload["causal_readiness_diagnostics"] = causal_assessment.diagnostics
-            missing_fields.append("causal_readiness_diagnostic(advisory)")
 
         blocking_fields = [f for f in missing_fields if not f.endswith("(advisory)")]
         return payload, missing_fields, blocking_fields
@@ -400,62 +384,12 @@ class SceneExecutionContractService:
             "project": {
                 "project_id": project.project_id if project is not None else None,
                 "reference_profile_ids": self._reference_profile_ids(project) if project is not None else [],
-                "causal_readiness_basis_hash": self._causal_readiness_basis_hash(project),
             },
             "blueprint_json": dict(blueprint.blueprint_json or {}) if blueprint is not None else {},
             "reference_rules": reference_rules,
             "contract_version": EXECUTION_CONTRACT_VERSION,
         }
 
-    def _causal_readiness_basis_hash(
-        self,
-        project: StoryProject | None,
-    ) -> str | None:
-        if project is None:
-            return None
-        skeleton_basis: dict[str, Any] | None = None
-        for step_key in ("scene_details", "long_synopsis"):
-            artifact = self.session.execute(
-                select(SnowflakeArtifact)
-                .where(
-                    SnowflakeArtifact.project_id == project.project_id,
-                    SnowflakeArtifact.step_key == step_key,
-                )
-                .order_by(SnowflakeArtifact.version.desc())
-            ).scalars().first()
-            if (
-                artifact is not None
-                and artifact.artifact_json
-                and artifact.artifact_json.get("causal_skeleton")
-            ):
-                skeleton_basis = {
-                    "artifact_id": artifact.artifact_id,
-                    "version": artifact.version,
-                    "causal_skeleton": artifact.artifact_json["causal_skeleton"],
-                }
-                break
-        if skeleton_basis is None:
-            return None
-        position_service = NarrativePositionService(self.session)
-        ordered_scenes = position_service.ordered_scenes(project.project_id)
-        ordered_scene_ids = [scene.scene_id for scene in ordered_scenes]
-        completed_scene_ids = self._canonical_completed_scene_ids(
-            project.project_id,
-            position_service=position_service,
-        )
-        return hashlib.sha256(
-            canonical_json(
-                {
-                    "ordered_scene_ids": ordered_scene_ids,
-                    "completed_scene_ids": [
-                        scene_id
-                        for scene_id in ordered_scene_ids
-                        if scene_id in completed_scene_ids
-                    ],
-                    "skeleton": skeleton_basis,
-                }
-            ).encode("utf-8")
-        ).hexdigest()
 
     def _reference_rules(self, project: StoryProject | None) -> dict[str, list[str]]:
         if project is None:
@@ -489,104 +423,6 @@ class SceneExecutionContractService:
             return [style_profile.profile_id]
         return []
 
-    def _check_causal_readiness(
-        self, scene: SceneCard, project: StoryProject | None,
-    ) -> SceneCausalReadinessAssessment | None:
-        """Evaluate advisory causal readiness and retain machine diagnostics."""
-        if project is None:
-            return None
-        try:
-            from novel_system.services.reverse_causal_skeleton import (
-                deserialize_skeleton,
-                validate_scene_causal_readiness,
-            )
-            # Load causal skeleton from the scene_details or long_synopsis artifact
-            for step_key in ("scene_details", "long_synopsis"):
-                art = self.session.execute(
-                    select(SnowflakeArtifact).where(
-                        SnowflakeArtifact.project_id == project.project_id,
-                        SnowflakeArtifact.step_key == step_key,
-                    ).order_by(SnowflakeArtifact.version.desc())
-                ).scalars().first()
-                if art and art.artifact_json and art.artifact_json.get("causal_skeleton"):
-                    skeleton_data = art.artifact_json["causal_skeleton"]
-                    break
-            else:
-                return None  # no skeleton found
-
-            # Reconstruct through the shared compatibility codec so legacy
-            # state aliases/missing ending fields and explicit chain order are
-            # interpreted consistently with the planner.
-            skeleton = deserialize_skeleton(skeleton_data)
-            if not skeleton.chain:
-                return None
-
-            # Skeleton step indices are project-wide narrative positions. A
-            # chapter-local scene_seq cannot distinguish CH01/SC01 from
-            # CH02/SC01 and becomes stale after a catalog reorder.
-            position_service = NarrativePositionService(self.session)
-            ordered_scenes = position_service.ordered_scenes(project.project_id)
-            scene_ordinal_by_id = {
-                positioned_scene.scene_id: ordinal
-                for ordinal, positioned_scene in enumerate(ordered_scenes, start=1)
-            }
-            scene_ordinal = scene_ordinal_by_id.get(scene.scene_id)
-            # ReverseCausalSkeleton.step_index is zero-based while catalog
-            # scene ordinals are one-based.
-            scene_step_index = scene_ordinal - 1 if scene_ordinal is not None else None
-            completed_scene_ids = {
-                *self._canonical_completed_scene_ids(
-                    project.project_id,
-                    position_service=position_service,
-                )
-            }
-            completed_scene_step_indices = sorted(
-                scene_ordinal_by_id[completed_scene_id] - 1
-                for completed_scene_id in completed_scene_ids
-                if completed_scene_id in scene_ordinal_by_id
-            )
-
-            readiness = validate_scene_causal_readiness(
-                skeleton,
-                scene_step_index,
-                completed_scenes=completed_scene_step_indices,
-                scene_id=scene.scene_id,
-                completed_scene_ids=sorted(completed_scene_ids),
-                # Unanchored skeletons depend on catalog ordinals, which can
-                # move. Until every link has a stable scene_id, fallback
-                # readiness is diagnostic/advisory and must never hard-block.
-                strict=False,
-            )
-            return SceneCausalReadinessAssessment(
-                warning=readiness.format_for_prompt() if readiness.unresolved else None,
-                diagnostics=[diagnostic.as_dict() for diagnostic in readiness.diagnostics],
-            )
-
-        except Exception as exc:
-            # Causal readiness stays advisory, but evaluation failure must not
-            # masquerade as a clean result.
-            logger.exception(
-                "causal_readiness_evaluation_failed",
-                extra={
-                    "event_code": "CAUSAL_READINESS_INTERNAL_ERROR",
-                    "project_id": project.project_id,
-                    "scene_id": scene.scene_id,
-                    "error_type": type(exc).__name__,
-                },
-            )
-            return SceneCausalReadinessAssessment(
-                diagnostics=[
-                    {
-                        "code": "CAUSAL_READINESS_INTERNAL_ERROR",
-                        "message": "causal readiness evaluation failed; generation remains advisory",
-                        "context": {
-                            "project_id": project.project_id,
-                            "scene_id": scene.scene_id,
-                            "error_type": type(exc).__name__,
-                        },
-                    }
-                ]
-            )
 
     def _canonical_completed_scene_ids(
         self,
@@ -624,130 +460,6 @@ class SceneExecutionContractService:
 
     def _require_chapter(self, chapter_id: str) -> ChapterGoal:
         return require_chapter(self.session, chapter_id)
-
-
-class SceneTriageService:
-    def __init__(self, session: Session) -> None:
-        self.session = session
-        self.contracts = SceneExecutionContractService(session)
-        self.backtracks = ProjectBacktrackService(session)
-
-    def evaluate(self, scene_id: str, *, actor_ref: str = "operator", mutate: bool = True) -> dict[str, Any]:
-        scene = self.contracts._require_scene(scene_id)
-        state = self.session.get(SceneRunState, scene_id)
-        if state is None:
-            if mutate:
-                raise DomainError("SCENE_RUN_STATE_NOT_FOUND", "scene run state not found", status_code=404)
-            state = SceneRunState(scene_id=scene_id, scene_status="ready")
-        contract = (
-            self.contracts.get_or_create(scene_id, actor_ref=actor_ref)
-            if mutate
-            else self.contracts.preview(scene_id, actor_ref=actor_ref)
-        )
-        latest_qc = self._latest_qc_report(scene_id, state)
-        decision = "yes"
-        next_action = "chapter_aggregate"
-        reason_codes: list[str] = []
-        backtrack_item = None
-
-        if contract.status == "stale":
-            decision = "no"
-            next_action = "create_backtrack_item"
-            reason_codes = ["execution_contract_stale"]
-        elif contract.status == "blocked":
-            decision = "no"
-            next_action = "create_backtrack_item"
-            reason_codes = ["execution_contract_blocked", *list(contract.missing_fields_json or [])]
-        elif latest_qc is not None and (latest_qc.next_action == "patch" or latest_qc.resolution_code == "soft_patch_requested"):
-            if state.soft_patch_count >= 1:
-                decision = "no"
-                next_action = "create_backtrack_item"
-                reason_codes = ["soft_patch_limit_reached", latest_qc.resolution_code or "soft_patch_requested"]
-            else:
-                decision = "maybe"
-                next_action = "auto_rewrite"
-                reason_codes = [latest_qc.resolution_code or "soft_patch_requested"]
-        elif latest_qc is not None and latest_qc.next_action == "rewrite_partial":
-            if state.hard_partial_rewrite_count >= 2:
-                decision = "no"
-                next_action = "create_backtrack_item"
-                reason_codes = ["hard_partial_limit_reached", latest_qc.resolution_code or "rewrite_partial"]
-            else:
-                decision = "maybe"
-                next_action = "auto_rewrite"
-                reason_codes = [latest_qc.resolution_code or "rewrite_partial"]
-        elif state.current_human_review_event_id:
-            decision = "no"
-            next_action = "create_backtrack_item"
-            reason_codes = ["human_review_required"]
-        elif not state.current_final_scene_row_id:
-            decision = "maybe"
-            next_action = "auto_rewrite"
-            reason_codes = ["final_scene_missing"]
-
-        if decision == "no" and mutate:
-            backtrack_item = self._ensure_backtrack_item(scene, contract, latest_qc, reason_codes, actor_ref=actor_ref)
-            self._mark_scene_for_replan(state)
-        payload = {
-            "scene_id": scene.scene_id,
-            "decision": decision,
-            "reason_codes": reason_codes,
-            "next_action": next_action,
-            "source_qc_report_id": latest_qc.qc_report_id if latest_qc is not None else None,
-            "execution_contract_id": contract.contract_id,
-            "backtrack_item_id": backtrack_item.item_id if backtrack_item is not None else None,
-        }
-        if mutate:
-            self.session.flush()
-        return payload
-
-    def _ensure_backtrack_item(
-        self,
-        scene: SceneCard,
-        contract: SceneExecutionContract,
-        latest_qc: QcReport | None,
-        reason_codes: list[str],
-        *,
-        actor_ref: str,
-    ):
-        scope = _scope_from_reasons(reason_codes)
-        summary = _problem_summary(contract, latest_qc, reason_codes)
-        recommended_fix = _recommended_fix(scope, contract, latest_qc)
-        return self.backtracks.ensure_item(
-            project_id=scene.project_id or "",
-            chapter_id=scene.chapter_id,
-            scene_id=scene.scene_id,
-            scope=scope,
-            target_ref=f"scene_card:{scene.scene_id}",
-            problem_summary=summary,
-            recommended_fix=recommended_fix,
-            reason_codes=reason_codes,
-            source_qc_report_id=latest_qc.qc_report_id if latest_qc is not None else None,
-            source_contract_id=contract.contract_id,
-            created_by=actor_ref or "operator",
-        )
-
-    @staticmethod
-    def _mark_scene_for_replan(state: SceneRunState) -> None:
-        state.scene_status = "needs_replan"
-        state.current_bundle_id = None
-        state.current_bundle_hash = None
-        state.current_neutral_draft_row_id = None
-        state.current_style_draft_row_id = None
-        state.current_final_scene_row_id = None
-        state.current_qc_report_id = None
-        state.current_human_review_event_id = None
-
-    def _latest_qc_report(self, scene_id: str, state: SceneRunState) -> QcReport | None:
-        if state.current_qc_report_id:
-            report = self.session.get(QcReport, state.current_qc_report_id)
-            if report is not None and report.scene_id == scene_id:
-                return report
-        return self.session.execute(
-            select(QcReport)
-            .where(QcReport.scene_id == scene_id, QcReport.status != "stale")
-            .order_by(QcReport.created_at.desc(), QcReport.qc_report_id.desc())
-        ).scalars().first()
 
 
 def _infer_scene_mode(scene: SceneCard, brief: dict[str, Any]) -> str:
@@ -799,17 +511,6 @@ def _normalize_reference_rules(profile_json: dict[str, Any]) -> dict[str, list[s
     }
 
 
-def _scope_from_reasons(reason_codes: list[str]) -> str:
-    joined = " ".join(reason_codes)
-    if "character" in joined:
-        return "character"
-    if "synopsis" in joined or "moral_premise" in joined:
-        return "synopsis"
-    if "scene_list" in joined:
-        return "scene_list"
-    return "scene_detail"
-
-
 FIELD_LABELS = {
     "scene_crucible": "坩埚/场景压力",
     "crucible": "坩埚/场景压力",
@@ -821,34 +522,6 @@ FIELD_LABELS = {
     "dilemma": "困境",
     "decision": "决定",
 }
-
-
-def _field_labels(fields: list[str]) -> list[str]:
-    return [FIELD_LABELS.get(str(field), str(field)) for field in fields]
-
-
-def _problem_summary(contract: SceneExecutionContract, latest_qc: QcReport | None, reason_codes: list[str]) -> str:
-    if contract.status == "blocked":
-        missing = "、".join(_field_labels(contract.missing_fields_json or []))
-        return f"场景执行契约还缺少作者可判断的关键项：{missing}。"
-    if contract.status == "stale":
-        return "上游雪花规划已经变化，当前场景执行契约需要刷新。"
-    if latest_qc is not None and latest_qc.issues_json:
-        first_issue = latest_qc.issues_json[0]
-        if isinstance(first_issue, dict) and first_issue.get("message"):
-            return str(first_issue["message"])
-    return f"场景急救判断为需要重做：{'、'.join(reason_codes)}。"
-
-
-def _recommended_fix(scope: str, contract: SceneExecutionContract, latest_qc: QcReport | None) -> str:
-    if contract.status == "blocked":
-        missing = "、".join(_field_labels(contract.missing_fields_json or []))
-        return f"回到场景规划，把这些项补成可写判断：{missing}。"
-    if contract.status == "stale":
-        return "复核更新后的雪花步骤，重新生成场景执行契约，再从刷新后的规划起草。"
-    if scope == "character":
-        return "回到角色摘要或角色全档案，让场景选择重新贴合角色目标、价值观和压力。"
-    return "回到场景规划，重设坩埚/场景压力和行动逻辑，再生成执行契约。"
 
 
 def _first_text(*values: Any) -> str:

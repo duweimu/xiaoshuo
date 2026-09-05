@@ -554,49 +554,6 @@ def test_create_scene_rejects_corrupted_user_text(client) -> None:
     assert response.json()["error"]["code"] == "TEXT_ENCODING_INVALID"
 
 
-def test_workbench_preflight_keeps_manual_hold_and_backfill_as_context_only(client, session: Session) -> None:
-    create_chapter(client, "CH914")
-    create_scene(
-        client,
-        chapter_id="CH914",
-        scene_id="CH914_SC01",
-        must_include_text='{{backfill id=F914 text="旧信寄件人线索"}}',
-    )
-    seed_voice_profile(session)
-    seed_relation_profile(session)
-    seed_literary_ready_state(session, scene_id="CH914_SC01", chapter_id="CH914")
-
-    hold_response = client.post(
-        "/api/v1/chapters/CH914/runtime/manual-hold",
-        json={"reason": "Wait for chapter-level operator review"},
-        headers={"X-Idempotency-Key": "chapter-hold-CH914"},
-    )
-    assert hold_response.status_code == 200
-
-    response = client.get("/api/v1/scenes/CH914_SC01/workbench")
-
-    assert response.status_code == 200
-    preflight = response.json()["data"]["run_preflight"]
-    assert preflight["can_run"] is True
-    assert preflight["overall_status"] == "warning"
-    assert preflight["blocking_items"] == []
-    assert preflight["warning_items"] == []
-    assert preflight["context_items"] == [
-        {
-            "code": "CHAPTER_MANUAL_HOLD_ACTIVE",
-            "title": "本章已设置人工挂起",
-            "detail": "这不会阻止当前场景运行，但会继续阻止章节级 final aggregate。",
-            "technical_hint": "manual hold reason: Wait for chapter-level operator review",
-        },
-        {
-            "code": "CHAPTER_BACKFILL_PENDING",
-            "title": "本章仍有待处理的 staged backfill",
-            "detail": "这不会阻止当前场景运行，但会继续阻止章节级 final aggregate。",
-            "technical_hint": "pending staged backfill count: 1",
-        },
-    ]
-
-
 def test_workbench_does_not_resurrect_stale_human_review_event_when_current_pointer_is_cleared(
     client,
     session: Session,

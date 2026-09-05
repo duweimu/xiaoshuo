@@ -91,13 +91,12 @@ $env:NOVEL_SYSTEM_LLM_EVENT_EXTRACTION_ENABLED = "true"
 
 ## 数据迁移
 
-本功能由 Alembic revision `20260818_0082` 提供。升级真实数据库前先停止服务并按运行安全文档完成可验证备份，再执行：
+本功能由 Alembic revision `20260818_0082` 提供（当前 head 为 `20260904_0083`）。升级真实数据库前先停止服务并按运行安全文档完成可验证备份，再执行：
 
 ```powershell
 cd backend
 .\.venv\Scripts\python.exe -m alembic current
 .\.venv\Scripts\python.exe -m alembic upgrade head
-.\.venv\Scripts\python.exe -m novel_system.tools.database_preflight .\novel_system.db --expected-revision 20260818_0082
 ```
 
 迁移不会把历史正文自动伪造为已复核正史。升级后按成稿中心列出的待处理场景逐一核验。

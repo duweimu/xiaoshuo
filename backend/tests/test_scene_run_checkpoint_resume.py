@@ -23,7 +23,6 @@ from novel_system.db.models import (
     HumanReviewEvent,
     LlmCall,
     LlmCallAttempt,
-    LongformStructureGuidance,
     NarrativeEvent,
     QcReport,
     RelationProfile,
@@ -6326,79 +6325,6 @@ def test_chapter_last_sub10_crash_reuses_evaluation_parent_and_budget(session) -
         parent.budget_charged_tokens,
         parent.total_tokens,
     ) == counters
-
-
-def test_chapter_last_sub11_crash_reuses_drift_guidance_without_superseding(
-    session, monkeypatch
-) -> None:
-    _seed_resume_scene(session)
-    scene = session.get(SceneCard, "CH_RESUME_SC01")
-    scene.is_chapter_last = 1
-    session.commit()
-    from novel_system.services import style_drift_detector
-
-    monkeypatch.setattr(
-        style_drift_detector,
-        "detect_chapter_drift",
-        lambda *_args, **_kwargs: SimpleNamespace(has_drift=True, drifts=["sentence_length"]),
-    )
-    monkeypatch.setattr(style_drift_detector, "format_drift_correction_prompt", lambda _report: "shorten sentences")
-    monkeypatch.setattr(style_drift_detector, "drift_corrective_ptype_priority", lambda _report: ["dialogue"])
-    monkeypatch.setattr(style_drift_detector, "format_drift_dimensions_for_bundle", lambda _report: {"sentence_length": "high"})
-    execution_id = "idempotency:chapter-last-sub11-crash"
-
-    def orchestrator() -> Orchestrator:
-        return Orchestrator(
-            session,
-            scene_generation_service=SceneGenerationService(session, llm_client=_CountingGenerationClient()),
-            hard_qc_engine=HardQcEngine(session, llm_client=_HardPassClient()),
-        )
-
-    first = orchestrator()
-    first._archive_manifest = lambda: (_ for _ in ()).throw(RuntimeError("stop after real sub11"))
-    with pytest.raises(RuntimeError, match="stop after real sub11"):
-        first.run_scene(scene.scene_id, execution_id=execution_id)
-    state = session.get(SceneRunState, scene.scene_id)
-    assert state.run_checkpoint_json["sub_index"] == 11
-    product = state.run_checkpoint_json["artifact_refs"]["archive_drift_product"]
-    assert product["outcome"] == "guidance_created"
-    guidance_id = product["guidance_id"]
-    assert session.scalar(
-        select(func.count()).select_from(LongformStructureGuidance).where(
-            LongformStructureGuidance.guidance_id.like("drift_%")
-        )
-    ) == 1
-    assert orchestrator().run_scene(scene.scene_id, execution_id=execution_id)["scene_status"] == "archived"
-    guidance = session.get(LongformStructureGuidance, guidance_id)
-    assert guidance.status == "approved"
-    assert session.scalar(
-        select(func.count()).select_from(LongformStructureGuidance).where(
-            LongformStructureGuidance.guidance_id.like("drift_%")
-        )
-    ) == 1
-    guidance.status = "superseded"
-    guidance.runtime_eligible = 0
-    session.commit()
-    with pytest.raises(DomainError) as corrupt:
-        orchestrator().run_scene(scene.scene_id, execution_id=execution_id)
-    assert corrupt.value.code == "RUN_CHECKPOINT_CORRUPT"
-
-    guidance.status = "approved"
-    guidance.runtime_eligible = 1
-    session.commit()
-    monkeypatch.setattr(
-        style_drift_detector,
-        "format_drift_correction_prompt",
-        lambda _report: "shorten sentences even further",
-    )
-    successor = Orchestrator(session)._detect_and_store_style_drift(scene)
-    session.commit()
-    assert successor["outcome"] == "guidance_created"
-    assert successor["guidance_id"] != guidance_id
-    session.refresh(guidance)
-    assert guidance.status == "superseded"
-    assert guidance.evidence_json["superseded_by_guidance_id"] == successor["guidance_id"]
-    assert orchestrator().run_scene(scene.scene_id, execution_id=execution_id)["scene_status"] == "archived"
 
 
 def test_missing_soft_qc_checkpoint_row_blocks_without_repeating_provider(session) -> None:

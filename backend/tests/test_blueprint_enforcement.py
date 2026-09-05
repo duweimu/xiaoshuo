@@ -9,7 +9,6 @@ from __future__ import annotations
 from novel_system.db.models import (
     ChapterGoal,
     ChapterState,
-    ForeshadowTracker,
     SceneCard,
 )
 
@@ -163,147 +162,14 @@ def test_cost_requirement_blocking_for_explicit_scenes(session):
     assert contract2.status == "active"
 
 
-def test_cost_requirement_advisory_for_legacy_scenes(client):
-    """Scenes without explicit scene_crucible (legacy/simple) should keep
-    cost_requirement as advisory (non-blocking)."""
-    client.post(
-        "/api/v1/chapters",
-        json={"chapter_id": "BP_LEG01", "planned_scene_count": 1, "chapter_goal": "legacy"},
-        headers={"X-Idempotency-Key": "bp-leg-ch"},
-    )
-    client.post(
-        "/api/v1/scenes",
-        json={
-            "scene_id": "BP_LEG01_SC01",
-            "chapter_id": "BP_LEG01",
-            "scene_seq": 1,
-            "pov_character_id": "CHAR_A",
-            "scene_goal": "simple legacy scene",
-            "beats_json": ["beat1", "beat2"],
-        },
-        headers={"X-Idempotency-Key": "bp-leg-sc"},
-    )
-    resp = client.post(
-        "/api/v1/scenes/BP_LEG01_SC01/execution-contract",
-        headers={"X-Idempotency-Key": "bp-legacy-execution-contract"},
-    )
-    assert resp.status_code == 200
-    contract = resp.json()["data"]["contract"]
-    # Legacy scene — cost_requirement is advisory, check it's not a blocking field
-    blocking_fields = [f for f in contract["missing_fields"] if "(advisory)" not in f]
-    assert "cost_requirement" not in blocking_fields
-    advisory_fields = [f for f in contract["missing_fields"] if "(advisory)" in f]
-    assert any("cost_requirement" in f for f in advisory_fields)
-
-
 # ---------------------------------------------------------------------------
 # §12: expression spectrum frequency tracking
 # ---------------------------------------------------------------------------
 
 
-def test_expression_spectrum_frequency_tracking(session):
-    from novel_system.services.theme_anchor import ThemeAnchorService
-
-    project_id = "EXPR_PROJ"
-    svc = ThemeAnchorService(session)
-    svc.set_controlling_idea(project_id, "残缺也可以是完整的")
-
-    # First usage → allowed
-    r1 = svc.record_expression_usage(project_id, "direct_commentary", "S1", "CH1")
-    assert r1["allowed"] is True
-    assert r1["usage"]["direct_commentary"] == 1
-
-    # Second usage → allowed (cap is 2)
-    r2 = svc.record_expression_usage(project_id, "direct_commentary", "S2", "CH2")
-    assert r2["allowed"] is True
-    assert r2["usage"]["direct_commentary"] == 2
-
-    # Third usage → blocked (exceeds cap of 2)
-    r3 = svc.record_expression_usage(project_id, "direct_commentary", "S3", "CH3")
-    assert r3["allowed"] is False
-    assert r3["warning"] is not None
-    assert "上限" in r3["warning"]
-
-
-def test_expression_budget_check(session):
-    from novel_system.services.theme_anchor import ThemeAnchorService
-
-    project_id = "EXPR_PROJ2"
-    svc = ThemeAnchorService(session)
-    svc.set_controlling_idea(project_id, "test theme")
-
-    # No usage yet → no warnings
-    warnings = svc.check_expression_budget(project_id)
-    assert len(warnings) == 0
-
-    # Use direct_commentary once → near_cap warning (cap=2, count=1)
-    svc.record_expression_usage(project_id, "direct_commentary", "S1", "CH1")
-    warnings = svc.check_expression_budget(project_id)
-    assert len(warnings) == 1
-    assert warnings[0]["status"] == "near_cap"
-
-    # Use again → exhausted
-    svc.record_expression_usage(project_id, "direct_commentary", "S2", "CH2")
-    warnings = svc.check_expression_budget(project_id)
-    assert len(warnings) == 1
-    assert warnings[0]["status"] == "exhausted"
-
-
 # ---------------------------------------------------------------------------
 # §5: retroactive foreshadow lifecycle
 # ---------------------------------------------------------------------------
-
-
-def _seed_chapter_for_foreshadow(session, chapter_id: str = "FS_RETRO", n_scenes: int = 10) -> str:
-    session.add(ChapterGoal(chapter_id=chapter_id, planned_scene_count=n_scenes, chapter_goal="test"))
-    session.add(ChapterState(chapter_id=chapter_id, current_phase="drafting"))
-    for seq in range(1, n_scenes + 1):
-        session.add(SceneCard(
-            scene_id=f"{chapter_id}_SC{seq:02d}",
-            chapter_id=chapter_id,
-            scene_seq=seq,
-            scene_goal=f"Scene {seq}",
-        ))
-    session.commit()
-    return chapter_id
-
-
-def test_foreshadow_retroactive_lifecycle(session):
-    from novel_system.services.foreshadow_lifecycle import ForeshadowLifecycleService
-
-    chapter_id = _seed_chapter_for_foreshadow(session)
-    svc = ForeshadowLifecycleService(session)
-
-    # Create a retroactive foreshadow
-    tracker = svc.create_retroactive_foreshadow(
-        chapter_id,
-        text="将军的刀上涂有慢性毒药",
-        payoff_scene_id=f"{chapter_id}_SC08",
-        target_plant_range=(2, 4),
-        plant_method="伤口持续疼痛，角色归因于伤口本身",
-        payoff_method="苏晚发现残臂出现异常黑纹",
-        theme_tag="残缺与完整",
-    )
-    assert tracker.tracker_status == "retroactive_pending"
-    assert tracker.foreshadow_id.startswith("fs_retro_")
-    assert tracker.row_id is not None
-
-    # Should appear in pending retroactive list
-    pending = svc.pending_retroactive_foreshadows(chapter_id)
-    assert len(pending) == 1
-    assert pending[0].foreshadow_id == tracker.foreshadow_id
-
-    # Mark as planted
-    svc.mark_retroactive_planted(tracker.foreshadow_id, f"{chapter_id}_SC03")
-    session.expire_all()
-
-    # Should no longer be pending; status should be "open"
-    pending_after = svc.pending_retroactive_foreshadows(chapter_id)
-    assert len(pending_after) == 0
-
-    updated = session.get(ForeshadowTracker, tracker.row_id)
-    assert updated.tracker_status == "open"
-    assert updated.scene_id == f"{chapter_id}_SC03"
 
 
 # ---------------------------------------------------------------------------

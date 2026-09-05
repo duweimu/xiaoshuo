@@ -128,7 +128,7 @@ function Get-RepoServiceProcessIds {
 
     $processIds = New-Object System.Collections.Generic.HashSet[int]
     $portOwners = @(
-        Get-NetTCPConnection -State Listen -LocalPort 8000, 5173 -ErrorAction SilentlyContinue |
+        Get-NetTCPConnection -State Listen -LocalPort 8000, 5174 -ErrorAction SilentlyContinue |
             Select-Object -ExpandProperty OwningProcess -Unique
     )
     if ($portOwners.Count -eq 0) {

@@ -36,7 +36,6 @@ from novel_system.services.llm_task_runner import (
     LLMNodeRunner,
     current_llm_execution_id,
 )
-from novel_system.services.project_backtracks import ProjectBacktrackService
 from novel_system.services.prompt_builder import PromptBuilder
 from novel_system.services.style_reference.materialization import MaterializationService
 from novel_system.services.style_reference.schemas import (
@@ -181,9 +180,7 @@ class ProjectService:
             ),
             None,
         )
-        backtrack_items = ProjectBacktrackService(self.session).list(project_id)[
-            "items"
-        ]
+        backtrack_items: list[dict[str, Any]] = []
         return {
             "project": project_payload(
                 project, reference_profile_ids=reference_profile_ids
@@ -202,41 +199,6 @@ class ProjectService:
             "runtime": self._runtime_readiness(),
         }
 
-    def attach_reference_profile(
-        self, project_id: str, profile_id: str
-    ) -> dict[str, Any]:
-        project = self.require_project(project_id)
-        profile = self.session.get(StyleReferenceProfile, profile_id)
-        if profile is None:
-            raise DomainError(
-                "REFERENCE_PROFILE_NOT_FOUND",
-                "reference profile not found",
-                status_code=404,
-            )
-        if profile.status != "active":
-            raise DomainError(
-                "REFERENCE_PROFILE_NOT_READY",
-                "reference profile must be ready before binding to a project",
-                status_code=409,
-            )
-        result = MaterializationService(self.session).apply_profile(
-            profile.profile_id,
-            scope=BindingScope.PROJECT,
-            scope_ref_id=project.project_id,
-            task_type=TaskType.SCENE_GENERATION,
-        )
-        self.session.flush()
-        binding = self.session.get(StyleReferenceInjectionBinding, result.binding_id)
-        reference_profile_ids = self._project_reference_profile_ids(project)
-        return {
-            "project": project_payload(
-                project, reference_profile_ids=reference_profile_ids
-            ),
-            "reference_profile": reference_profile_payload(profile, binding=binding),
-            "binding_id": result.binding_id,
-            "review_ids": result.review_ids,
-            "rag_index": result.rag_index,
-        }
 
     def approve_outline_plan(self, project_id: str, plan_id: str) -> dict[str, Any]:
         project = self.require_project(project_id)
@@ -575,372 +537,6 @@ class ProjectService:
                 return project_id
 
 
-class OutlinePlannerService:
-    def __init__(self, session: Session) -> None:
-        self.session = session
-        self._prompt_builder = PromptBuilder()
-
-    def generate(
-        self, project_id: str, payload: dict[str, Any] | None = None
-    ) -> dict[str, Any]:
-        project = ProjectService(self.session).require_project(project_id)
-        version = self._next_version(project.project_id)
-        plan = OutlinePlan(
-            plan_id=f"outline_plan_{project.project_id}_{version:02d}_{uuid.uuid4().hex[:8]}",
-            project_id=project.project_id,
-            version=version,
-            status=PLAN_STATUS_PENDING_REVIEW,
-            plan_json=self._build_plan(project, payload or {}),
-        )
-        project.status = PROJECT_STATUS_OUTLINE_REVIEW
-        self.session.add(plan)
-        self.session.flush()
-        return {"plan": outline_plan_payload(plan), "project": project_payload(project)}
-
-    def _next_version(self, project_id: str) -> int:
-        latest = self.session.execute(
-            select(OutlinePlan.version)
-            .where(OutlinePlan.project_id == project_id)
-            .order_by(OutlinePlan.version.desc())
-        ).scalar()
-        return int(latest or 0) + 1
-
-    def _build_plan(
-        self, project: StoryProject, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        if get_settings().llm_enabled:
-            return self._build_llm_plan(project, payload)
-        return self._build_local_plan(project, payload)
-
-    def _build_llm_plan(
-        self, project: StoryProject, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        chapter_count = (
-            _optional_positive_int(payload.get("target_chapter_count"))
-            or project.target_chapter_count
-            or 2
-        )
-        chapter_count = max(1, min(int(chapter_count), 80))
-        reference_safety = list(REFERENCE_SAFETY_RULES)
-        snapshot = {
-            "project": project_payload(project),
-            "target_chapter_count": chapter_count,
-            "outline_text": project.outline_text,
-            "reference_safety": reference_safety,
-            "planning_constraints": {
-                "original_only": True,
-                "avoid_source_book_names_settings_plot_or_signature_imagery": True,
-                "required_scene_fields": [
-                    "scene_goal",
-                    "beats_json",
-                    "exit_change",
-                    "hook",
-                    "target_length_band",
-                    "scene_type",
-                ],
-            },
-        }
-        prompt = self._prompt_builder.build(snapshot, "project_outline_plan")
-        bundle_hash = hashlib.sha256(
-            canonical_json(snapshot).encode("utf-8")
-        ).hexdigest()
-        execution_step_key = "project_outline_plan"
-        execution_id = current_llm_execution_id()
-        context = LLMCallContext(
-            scope_type="project",
-            scope_id=project.project_id,
-            project_id=project.project_id,
-            node_id="project_outline_plan",
-            step="project_outline_plan",
-            execution_id=execution_id,
-            execution_step_key=execution_step_key if execution_id is not None else None,
-            provider_execution_mode="online",
-        )
-        try:
-            result = LLMNodeRunner(self.session).run(
-                scene_id=f"project_{project.project_id}",
-                chapter_id=project.project_id,
-                bundle_id=f"project_outline:{project.project_id}",
-                bundle_hash=bundle_hash,
-                node_id="project_outline_plan",
-                step="project_outline_plan",
-                prompt=prompt,
-                user_prompt=prompt["user_prompt"],
-                execution_step_key=execution_step_key,
-                context=context,
-            )
-        except LLMNodeExecutionError as exc:
-            raise DomainError(
-                "PROJECT_OUTLINE_PLAN_LLM_FAILED",
-                exc.message,
-                status_code=409,
-                details={
-                    "llm_call_id": exc.llm_call_id,
-                    "node_id": "project_outline_plan",
-                    "error_code": exc.error_code,
-                    "next_action": "configure_project_outline_plan_route_and_retry",
-                    "response_summary": exc.response_summary,
-                },
-            ) from exc
-        structured_output = result.response.structured_output or {}
-        return self._normalize_llm_plan(
-            project,
-            structured_output,
-            chapter_count=chapter_count,
-            reference_safety=reference_safety,
-            llm_call_id=result.llm_call_id,
-        )
-
-    def _normalize_llm_plan(
-        self,
-        project: StoryProject,
-        output: dict[str, Any],
-        *,
-        chapter_count: int,
-        reference_safety: list[str],
-        llm_call_id: str,
-    ) -> dict[str, Any]:
-        chapters_payload = (
-            output.get("chapters") if isinstance(output.get("chapters"), list) else []
-        )
-        outline_points = _outline_points(project.outline_text, max(chapter_count, 1))
-        chapters: list[dict[str, Any]] = []
-        for index in range(1, chapter_count + 1):
-            raw_chapter = (
-                chapters_payload[index - 1]
-                if index - 1 < len(chapters_payload)
-                and isinstance(chapters_payload[index - 1], dict)
-                else {}
-            )
-            point = (
-                outline_points[index - 1]
-                if index - 1 < len(outline_points)
-                else outline_points[-1]
-            )
-            chapter_id = str(
-                raw_chapter.get("chapter_id") or f"{project.project_id}_CH{index:02d}"
-            ).strip()
-            scenes = self._normalize_llm_scenes(
-                project=project,
-                chapter_id=chapter_id,
-                chapter_index=index,
-                chapter_count=chapter_count,
-                point=point,
-                raw_scenes=raw_chapter.get("scenes"),
-                reference_safety=reference_safety,
-            )
-            chapters.append(
-                {
-                    "chapter_id": chapter_id,
-                    "title": str(
-                        raw_chapter.get("title") or f"Chapter {index:02d}"
-                    ).strip(),
-                    "planned_scene_count": len(scenes),
-                    "chapter_goal": str(
-                        raw_chapter.get("chapter_goal")
-                        or _chapter_push(index, chapter_count, point)
-                    ).strip(),
-                    "main_plot_push": _optional_text(raw_chapter.get("main_plot_push"))
-                    or _chapter_push(index, chapter_count, point),
-                    "emotional_target": _optional_text(
-                        raw_chapter.get("emotional_target")
-                    )
-                    or "Make the pressure visible through action.",
-                    "ending_effect": _optional_text(raw_chapter.get("ending_effect"))
-                    or "End with a changed choice, cost, or clue.",
-                    "must_not": _optional_text(raw_chapter.get("must_not"))
-                    or "Do not copy protected source-book expression.",
-                    "notes": _optional_text(raw_chapter.get("notes"))
-                    or "LLM outline plan normalized by the system.",
-                    "writer_brief_json": dict(
-                        raw_chapter.get("writer_brief_json") or {}
-                    ),
-                    "scenes": scenes,
-                }
-            )
-        return {
-            "source": "llm",
-            "node_id": "project_outline_plan",
-            "llm_call_id": llm_call_id,
-            "project_id": project.project_id,
-            "project_title": project.title,
-            "outline_text": project.outline_text,
-            "reference_safety": _string_list(output.get("reference_safety"))
-            or reference_safety,
-            "chapters": chapters,
-        }
-
-    def _normalize_llm_scenes(
-        self,
-        *,
-        project: StoryProject,
-        chapter_id: str,
-        chapter_index: int,
-        chapter_count: int,
-        point: str,
-        raw_scenes: Any,
-        reference_safety: list[str],
-    ) -> list[dict[str, Any]]:
-        scenes_payload = raw_scenes if isinstance(raw_scenes, list) else []
-        scene_count = (
-            max(1, len(scenes_payload))
-            if scenes_payload
-            else (3 if chapter_index in {1, chapter_count} else 2)
-        )
-        fallback_scenes = self._scene_plan(
-            project, chapter_id, point, chapter_index, chapter_count, reference_safety
-        )
-        scenes: list[dict[str, Any]] = []
-        for scene_index in range(1, scene_count + 1):
-            raw_scene = (
-                scenes_payload[scene_index - 1]
-                if scene_index - 1 < len(scenes_payload)
-                and isinstance(scenes_payload[scene_index - 1], dict)
-                else {}
-            )
-            fallback = (
-                fallback_scenes[scene_index - 1]
-                if scene_index - 1 < len(fallback_scenes)
-                else fallback_scenes[-1]
-            )
-            # 审计 P-18：scene_id 是全局主键，强制系统格式化——LLM 返回的自由字符串
-            # 可能与其他章撞号（同 id 建卡时静默覆盖）。
-            scene_id = f"{chapter_id}_SC{scene_index:02d}"
-            scenes.append(
-                {
-                    "scene_id": scene_id,
-                    "chapter_id": chapter_id,
-                    "scene_seq": int(raw_scene.get("scene_seq") or scene_index),
-                    "pov_character_id": _optional_text(
-                        raw_scene.get("pov_character_id")
-                    ),
-                    "onstage_chars_json": _string_list(
-                        raw_scene.get("onstage_chars_json")
-                    ),
-                    "location": _optional_text(raw_scene.get("location")),
-                    "scene_goal": str(
-                        raw_scene.get("scene_goal") or fallback["scene_goal"]
-                    ).strip(),
-                    "beats_json": _string_list(raw_scene.get("beats_json"))
-                    or list(fallback["beats_json"]),
-                    "must_include_text": _optional_text(
-                        raw_scene.get("must_include_text")
-                    )
-                    or fallback.get("must_include_text"),
-                    "forbidden_text": _optional_text(raw_scene.get("forbidden_text"))
-                    or fallback.get("forbidden_text"),
-                    "exit_change": _optional_text(raw_scene.get("exit_change"))
-                    or fallback.get("exit_change"),
-                    "hook": _optional_text(raw_scene.get("hook"))
-                    or fallback.get("hook"),
-                    "target_length_band": _optional_text(
-                        raw_scene.get("target_length_band")
-                    )
-                    or "medium",
-                    "scene_type": _optional_text(raw_scene.get("scene_type"))
-                    or "outline_driven",
-                    "is_chapter_last": 1 if scene_index == scene_count else 0,
-                    "writer_brief_json": {
-                        "source": "llm",
-                        "node_id": "project_outline_plan",
-                        "project_id": project.project_id,
-                        "reference_safety": reference_safety,
-                        **dict(raw_scene.get("writer_brief_json") or {}),
-                    },
-                }
-            )
-        return scenes
-
-    def _build_local_plan(
-        self, project: StoryProject, payload: dict[str, Any]
-    ) -> dict[str, Any]:
-        chapter_count = (
-            _optional_positive_int(payload.get("target_chapter_count"))
-            or project.target_chapter_count
-            or 2
-        )
-        chapter_count = max(1, min(int(chapter_count), 80))
-        outline_points = _outline_points(project.outline_text, chapter_count)
-        reference_safety = list(REFERENCE_SAFETY_RULES)
-        chapters: list[dict[str, Any]] = []
-        for index in range(1, chapter_count + 1):
-            point = (
-                outline_points[index - 1]
-                if index - 1 < len(outline_points)
-                else outline_points[-1]
-            )
-            chapter_id = f"{project.project_id}_CH{index:02d}"
-            chapter_title = f"第{index:02d}章 {point[:18]}"
-            scenes = self._scene_plan(
-                project, chapter_id, point, index, chapter_count, reference_safety
-            )
-            chapters.append(
-                {
-                    "chapter_id": chapter_id,
-                    "title": chapter_title,
-                    "planned_scene_count": len(scenes),
-                    "chapter_goal": f"围绕大纲节点推进：{point}",
-                    "main_plot_push": _chapter_push(index, chapter_count, point),
-                    "emotional_target": "让主要人物在压力下暴露真实需求，并付出具体代价。",
-                    "ending_effect": "以新的信息、行动后果或关系变化收束，并留下下一章钩子。",
-                    "must_not": "不得复制参考书原文表达、人物、设定或桥段；不得跳过用户大纲中的硬事实。",
-                    "notes": "由项目大纲自动拆解，需先通过结构审核再开写。",
-                    "scenes": scenes,
-                }
-            )
-        return {
-            "source": "project_outline_plan",
-            "project_id": project.project_id,
-            "project_title": project.title,
-            "outline_text": project.outline_text,
-            "reference_safety": reference_safety,
-            "chapters": chapters,
-        }
-
-    def _scene_plan(
-        self,
-        project: StoryProject,
-        chapter_id: str,
-        point: str,
-        chapter_index: int,
-        chapter_count: int,
-        reference_safety: list[str],
-    ) -> list[dict[str, Any]]:
-        scene_count = 2
-        if chapter_index == 1 or chapter_index == chapter_count:
-            scene_count = 3
-        scenes: list[dict[str, Any]] = []
-        for scene_index in range(1, scene_count + 1):
-            scene_id = f"{chapter_id}_SC{scene_index:02d}"
-            role = _scene_role(scene_index, scene_count)
-            scenes.append(
-                {
-                    "scene_id": scene_id,
-                    "chapter_id": chapter_id,
-                    "scene_seq": scene_index,
-                    "scene_goal": f"{role}：让“{point}”在行动、选择或后果中显形。",
-                    "beats_json": [
-                        f"承接项目大纲：{point}",
-                        f"制造{role}压力，避免解释性旁白。",
-                        "用行动或对白推进信息，而不是复述设定。",
-                    ],
-                    "must_include_text": point,
-                    "forbidden_text": "不得复制参考书原文表达、人物、设定或桥段。",
-                    "exit_change": "场景结束时至少改变一个信息、关系或行动目标。",
-                    "hook": "以未解决的选择、代价或发现推动下一场。",
-                    "target_length_band": "medium",
-                    "scene_type": "outline_driven",
-                    "is_chapter_last": 1 if scene_index == scene_count else 0,
-                    "writer_brief_json": {
-                        "source": "project_outline_plan",
-                        "project_id": project.project_id,
-                        "reference_safety": reference_safety,
-                    },
-                }
-            )
-        return scenes
-
-
 class ProjectChapterFlowService:
     def __init__(self, session: Session) -> None:
         self.session = session
@@ -1226,133 +822,6 @@ class ProjectChapterFlowService:
         self.session.flush()
         return confirmation
 
-    def final_review(
-        self,
-        project_id: str,
-        chapter_id: str,
-        payload: dict[str, Any] | None = None,
-        *,
-        actor_ref: str = "operator",
-    ) -> dict[str, Any]:
-        body = payload or {}
-        decision = str(body.get("decision") or "").strip() or "approve"
-        scene_decisions = (
-            body.get("scene_decisions")
-            if isinstance(body.get("scene_decisions"), list)
-            else []
-        )
-        revision_notes = str(body.get("revision_notes") or "").strip()
-        if len(revision_notes) > 2000:
-            raise DomainError(
-                "CHAPTER_APPROVAL_NOTES_TOO_LONG",
-                "revision_notes must be 2000 characters or fewer",
-                status_code=400,
-            )
-        project = ProjectService(self.session).require_project(project_id)
-        self._require_project_chapter(project, chapter_id)
-        if project.current_chapter_id != chapter_id:
-            raise DomainError(
-                "PROJECT_CHAPTER_NOT_CURRENT",
-                "only the current chapter final can be reviewed",
-            )
-
-        requested_revisions = [
-            item
-            for item in scene_decisions
-            if isinstance(item, dict)
-            and str(item.get("decision") or "").strip()
-            in {"request_revision", "request_scene_revision"}
-        ]
-        if not requested_revisions and decision in {
-            "approve",
-            "approve_final",
-            "approved",
-        }:
-            return self.approve_final(
-                project_id,
-                chapter_id,
-                {"revision_notes": revision_notes},
-                actor_ref=actor_ref,
-            )
-        if not requested_revisions and decision not in {
-            "request_revision",
-            "request_scene_revision",
-            "request_chapter_revision",
-        }:
-            raise DomainError(
-                "CHAPTER_FINAL_REVIEW_DECISION_INVALID",
-                "final review decision is invalid",
-                status_code=400,
-            )
-
-        backtracks = ProjectBacktrackService(self.session)
-        created_items = []
-        for item in requested_revisions or [
-            {
-                "scene_id": None,
-                "note": revision_notes or "Chapter needs revision before approval.",
-            }
-        ]:
-            scene_id = str(item.get("scene_id") or "").strip() or None
-            if scene_id:
-                scene = self.session.get(SceneCard, scene_id)
-                if scene is None or scene.chapter_id != chapter_id:
-                    raise DomainError(
-                        "PROJECT_REVIEW_SCENE_NOT_FOUND",
-                        "scene does not belong to the reviewed chapter",
-                        status_code=404,
-                    )
-            note = str(
-                item.get("note")
-                or revision_notes
-                or "Scene needs revision before chapter approval."
-            ).strip()
-            created_items.append(
-                backtracks.ensure_item(
-                    project_id=project.project_id,
-                    chapter_id=chapter_id,
-                    scene_id=scene_id,
-                    scope=(
-                        "chapter_final_review_scene"
-                        if scene_id
-                        else "chapter_final_review"
-                    ),
-                    target_ref=scene_id or chapter_id,
-                    problem_summary=note,
-                    recommended_fix=note,
-                    reason_codes=["chapter_final_review"],
-                    created_by=actor_ref or "chapter_final_review",
-                )
-            )
-        project.status = PROJECT_STATUS_CHAPTER_BLOCKED
-        self.session.add(
-            OperationLog(
-                event_type="chapter_final_revision_request",
-                object_type="chapter",
-                object_ref=chapter_id,
-                payload_json={
-                    "project_id": project.project_id,
-                    "chapter_id": chapter_id,
-                    "decision": decision,
-                    "revision_notes": revision_notes,
-                    "scene_decisions": scene_decisions,
-                    "backtrack_item_ids": [item.item_id for item in created_items],
-                    "actor_ref": actor_ref or "operator",
-                },
-            )
-        )
-        self.session.flush()
-        return {
-            "project": project_payload(project),
-            "review_decision": {
-                "decision": decision,
-                "revision_notes": revision_notes,
-                "actor_ref": actor_ref or "operator",
-            },
-            "backtrack_items": [
-                ProjectBacktrackService.serialize(item) for item in created_items
-            ],
-        }
 
     def review_packet(
         self, project: StoryProject, chapter_id: str | None
@@ -1718,10 +1187,17 @@ def _run_project_chapter_job_worker(
         # Startup recovery may be invoked concurrently by multiple ASGI
         # workers.  Losing the durable chapter-job CAS is a benign duplicate
         # dispatch and must never overwrite the winning worker with FAILED.
-        if exc.code in {"RUN_JOB_IN_PROGRESS", "RUN_JOB_NOT_CLAIMABLE"}:
+        # RUN_OWNER_LEASE_LOST is the same situation observed after the claim:
+        # another worker replaced this one, and the job now belongs to it.
+        if exc.code in {"RUN_JOB_IN_PROGRESS", "RUN_JOB_NOT_CLAIMABLE", "RUN_OWNER_LEASE_LOST"}:
             return
         _mark_project_chapter_job_failed(
-            job_id, project_id, chapter_id, exc.code, exc.message
+            job_id,
+            project_id,
+            chapter_id,
+            exc.code,
+            exc.message,
+            author_action=_domain_error_author_action(exc),
         )
     except Exception as exc:  # pragma: no cover - defensive worker boundary
         session.rollback()
@@ -1736,8 +1212,20 @@ def _run_project_chapter_job_worker(
         session.close()
 
 
+def _domain_error_author_action(exc: DomainError) -> dict[str, Any] | None:
+    details = exc.details if isinstance(exc.details, dict) else None
+    action = details.get("author_action") if details else None
+    return dict(action) if isinstance(action, dict) else None
+
+
 def _mark_project_chapter_job_failed(
-    job_id: str, project_id: str, chapter_id: str, error_code: str, error_text: str
+    job_id: str,
+    project_id: str,
+    chapter_id: str,
+    error_code: str,
+    error_text: str,
+    *,
+    author_action: dict[str, Any] | None = None,
 ) -> None:
     session = SessionLocal()
     try:
@@ -1748,7 +1236,17 @@ def _mark_project_chapter_job_failed(
             job.error_text = error_text
             job.finished_at = utcnow()
             summary = dict(job.result_summary_json or {})
-            summary["latest_error"] = {"code": error_code, "message": error_text}
+            latest_error: dict[str, Any] = {"code": error_code, "message": error_text}
+            # ChapterRunnerService 在 claim 后失败时已把带 author_action 的 latest_error
+            # 提交进任务行；这里是同一错误的二次落库，不能把作者指引覆盖掉。
+            previous = summary.get("latest_error")
+            action = author_action
+            if action is None and isinstance(previous, dict) and previous.get("code") == error_code:
+                previous_action = previous.get("author_action")
+                action = dict(previous_action) if isinstance(previous_action, dict) else None
+            if action:
+                latest_error["author_action"] = action
+            summary["latest_error"] = latest_error
             job.result_summary_json = summary
         project = session.get(StoryProject, project_id)
         if project is not None and project.current_chapter_id == chapter_id:

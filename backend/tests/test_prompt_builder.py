@@ -3,8 +3,6 @@ from __future__ import annotations
 from copy import deepcopy
 
 from novel_system.db.models import (
-    BannedRuleCluster,
-    CalibrationLine,
     ChapterGoal,
     FinalScene,
     SceneCard,
@@ -15,8 +13,6 @@ from novel_system.db.models import (
     StyleReferenceInjectionBinding,
     StyleReferenceProfile,
     StyleReferenceRun,
-    StyleObservation,
-    StyleRule,
 )
 from novel_system.services.bundle_builder import BundleBuilder
 from novel_system.services.prompt_builder import (
@@ -170,55 +166,6 @@ def test_bundle_snapshot_carries_active_reference_profile_provenance(session) ->
     )
 
 
-def test_prompt_builder_includes_required_sections_and_stable_hash() -> None:
-    builder = PromptBuilder()
-    snapshot = _bundle_snapshot()
-
-    payload = builder.build(snapshot, "neutral_draft")
-    repeated = builder.build(deepcopy(snapshot), "neutral_draft")
-
-    assert payload["template_name"] == "neutral_draft"
-    assert payload["system_prompt"]
-    assert payload["structured_schema"]["type"] == "object"
-    assert "Chapter Goal" in payload["user_prompt"]
-    assert "Scene Card" in payload["user_prompt"]
-    assert "Character Continuity Contract" in payload["user_prompt"]
-    assert '"display_name":"Mira"' in payload["user_prompt"]
-    assert "same language as the chapter goal and scene card" in payload["user_prompt"]
-    assert (
-        "Preserve character identity and pronoun continuity" in payload["user_prompt"]
-    )
-    assert (
-        "When pronouns are ambiguous, repeat the character name"
-        in payload["user_prompt"]
-    )
-    assert "Required top-level JSON keys: scene_text" in payload["user_prompt"]
-    assert (
-        "Return only valid JSON. Do not wrap it in markdown fences."
-        in payload["user_prompt"]
-    )
-    assert "POV Voice" in payload["user_prompt"]
-    assert "Style Rules" not in payload["user_prompt"]
-    assert "Open Foreshadow" in payload["user_prompt"]
-    assert (
-        "Close the reunion chapter with a traceable reveal." in payload["user_prompt"]
-    )
-    assert (
-        "Reunite the leads and turn the old letter into immediate action."
-        in payload["user_prompt"]
-    )
-    assert payload["prompt_hash"] == repeated["prompt_hash"]
-    assert payload["token_budget"]["compressed_sections"] == []
-    assert payload["token_budget"]["omitted_sections"] == [
-        "style_rules",
-        "banned_rules",
-        "style_observations",
-        "calibration_lines",
-    ]
-    assert "chapter_goal" in payload["token_budget"]["included_sections"]
-    assert payload["token_budget"]["split_scene_recommended"] is False
-
-
 def test_prompt_builder_hash_changes_only_for_relevant_inputs() -> None:
     builder = PromptBuilder()
     baseline_snapshot = _bundle_snapshot()
@@ -254,79 +201,6 @@ def test_prompt_builder_enforces_budget_using_rendered_prompt_shape() -> None:
     )
 
 
-def test_prompt_builder_applies_continuity_compaction_order_and_split_scene_recommendation() -> (
-    None
-):
-    builder = PromptBuilder()
-    snapshot = _bundle_snapshot()
-    snapshot["inline_digests"]["chapter_goal"] = " ".join(["Goal pressure"] * 80)
-    snapshot["inline_digests"]["scene_card"] = " ".join(["Scene pressure"] * 80)
-
-    payload = builder.build(snapshot, "style_draft", max_input_tokens=120)
-    budget = payload["token_budget"]
-
-    assert budget["section_status"]["similar_scene_context"]["status"] == "omitted"
-    assert budget["section_status"]["style_observations"]["status"] == "compressed"
-    assert budget["section_status"]["calibration_lines"]["status"] == "included"
-    assert budget["section_status"]["relation_digest"]["status"] == "included"
-    assert budget["section_status"]["world_rules"]["status"] == "included"
-    assert budget["section_status"]["scene_memory_digest"]["status"] == "included"
-    assert budget["section_status"]["scene_summary"]["status"] == "included"
-    assert budget["section_status"]["chapter_summary"]["status"] == "included"
-    assert budget["split_scene_recommended"] is True
-    assert budget["stop_reason"] == "split_scene_recommended"
-    assert "Similar Scene Context" not in payload["user_prompt"]
-    assert "The door closed like a sentence left unfinished." in payload["user_prompt"]
-    assert "## Scene Summary" in payload["user_prompt"]
-    assert "## Chapter Summary" in payload["user_prompt"]
-
-
-def test_neutral_draft_omits_target_style_context_but_style_pass_keeps_it() -> None:
-    builder = PromptBuilder()
-    snapshot = _bundle_snapshot()
-    snapshot["inline_digests"].update(
-        {
-            "style_profile": "STYLE_FEATURE_CONTRACT_v1\nrhythm: clipped target beats.",
-            "author_preference_profile": "Prefer a named author's surface cadence.",
-            "narrative_pattern": "Delay every reveal with the target author's pattern.",
-        }
-    )
-
-    neutral = builder.build(snapshot, "neutral_draft")
-    styled = builder.build(snapshot, "style_draft")
-
-    expected_omissions = {
-        "style_profile",
-        "author_preference_profile",
-        "style_rules",
-        "banned_rules",
-        "style_observations",
-        "narrative_patterns",
-        "calibration_lines",
-    }
-    neutral_budget = neutral["token_budget"]
-    assert neutral_budget["task_kind"] == "neutral_draft"
-    assert expected_omissions.issubset(set(neutral_budget["omitted_sections"]))
-    assert all(
-        neutral_budget["section_status"][name]["status"] == "omitted"
-        for name in expected_omissions
-    )
-    assert "## POV Voice" in neutral["user_prompt"]
-    assert "## Style Feature Contract" not in neutral["user_prompt"]
-    assert "## Author Preference Profile" not in neutral["user_prompt"]
-    assert "## Style Rules" not in neutral["user_prompt"]
-    assert "## Banned Rules" not in neutral["user_prompt"]
-    assert "## Style Observations" not in neutral["user_prompt"]
-    assert "## Narrative Patterns" not in neutral["user_prompt"]
-    assert "## Calibration Lines" not in neutral["user_prompt"]
-
-    styled_budget = styled["token_budget"]
-    assert styled_budget["task_kind"] == "drafting"
-    assert expected_omissions.issubset(set(styled_budget["included_sections"]))
-    assert "## Style Feature Contract" in styled["user_prompt"]
-    assert "## Narrative Patterns" in styled["user_prompt"]
-
-
 def test_prompt_builder_returns_isolated_schema_copies() -> None:
     builder = PromptBuilder()
     snapshot = _bundle_snapshot()
@@ -341,49 +215,6 @@ def test_prompt_builder_returns_isolated_schema_copies() -> None:
     assert repeated["prompt_hash"] == original_hash
     assert repeated["structured_schema"]["required"] == ["scene_text"]
     assert repeated["structured_schema"]["properties"]["scene_text"]["type"] == "string"
-
-
-def test_prompt_builder_renders_style_feature_contract_for_style_draft() -> None:
-    builder = PromptBuilder()
-    snapshot = _bundle_snapshot()
-    snapshot["ordered_injections"].append(
-        {
-            "slot": "style_profile",
-            "ref_id": "STYLE_FEATURE_CONTRACT_v1",
-            "digest_key": "style_profile",
-        }
-    )
-    snapshot["inline_digests"][
-        "style_profile"
-    ] = """
-{
-  "contract_version": "STYLE_FEATURE_CONTRACT_v1",
-  "features": {
-    "rhythm": {"guidance": ["short pressure beats before reveals"]},
-    "syntax": {"guidance": ["mix clipped dialogue with one longer internal sentence"]},
-    "imagery": {"guidance": ["use tactile door and paper images"]},
-    "narrative_distance": {"guidance": ["close third-person interior pressure"]},
-    "emotion_curve": {"guidance": ["suspicion to controlled urgency"]},
-    "paragraph_density": {"guidance": ["compact paragraphs with hard-ending lines"]},
-    "dialogue_ratio": {"guidance": ["dialogue stays below exposition"]}
-  },
-  "banned_moves": ["do not explain the full backstory"]
-}
-""".strip()
-
-    payload = builder.build(snapshot, "style_draft")
-
-    assert "## Style Feature Contract" in payload["user_prompt"]
-    assert (
-        "Preserve character identity and pronoun continuity" in payload["user_prompt"]
-    )
-    assert "STYLE_FEATURE_CONTRACT_v1" in payload["user_prompt"]
-    assert "rhythm" in payload["user_prompt"]
-    assert "syntax" in payload["user_prompt"]
-    assert "imagery" in payload["user_prompt"]
-    assert "narrative_distance" in payload["user_prompt"]
-    assert "paragraph_density" in payload["user_prompt"]
-    assert "style_profile" in payload["token_budget"]["included_sections"]
 
 
 def test_prompt_builder_injects_literary_freshness_budget() -> None:
@@ -412,35 +243,6 @@ def test_chapter_summary_schema_requires_carry_forward() -> None:
     payload = PromptBuilder().build(_bundle_snapshot(), "chapter_summary")
 
     assert payload["structured_schema"]["required"] == ["summary", "carry_forward"]
-
-
-def test_writer_diagnosis_schema_requires_textual_evidence_fields() -> None:
-    payload = PromptBuilder().build(_bundle_snapshot(), "writer_scene_diagnosis")
-    finding_schema = payload["structured_schema"]["properties"]["findings"]["items"]
-
-    assert {"evidence_excerpt", "evidence_location", "why_it_matters"}.issubset(
-        set(finding_schema["required"])
-    )
-    assert finding_schema["properties"]["evidence_excerpt"]["type"] == "string"
-    assert finding_schema["properties"]["why_it_matters"]["type"] == "string"
-
-
-def test_writer_chapter_revision_schema_returns_plan_and_selected_passages() -> None:
-    payload = PromptBuilder().build(_bundle_snapshot(), "writer_chapter_revision")
-
-    assert payload["structured_schema"]["required"] == [
-        "revision_plan",
-        "selected_rewrite_passages",
-        "diff_summary",
-    ]
-    passage_schema = payload["structured_schema"]["properties"][
-        "selected_rewrite_passages"
-    ]["items"]
-    assert passage_schema["required"] == ["source_excerpt", "revised_text", "reason"]
-    assert (
-        "Required top-level JSON keys: revision_plan, selected_rewrite_passages, diff_summary"
-        in payload["user_prompt"]
-    )
 
 
 def test_writer_passage_patch_schema_is_manual_only_and_targeted() -> None:
@@ -701,173 +503,6 @@ templates:
         raise AssertionError(
             "expected closed-schema required/property mismatch to be rejected"
         )
-
-
-def test_bundle_builder_adds_style_observation_digest_to_snapshot(session) -> None:
-    session.add(
-        ChapterGoal(
-            chapter_id="CH900",
-            planned_scene_count=1,
-            chapter_goal="Hold the pressure at the city gate.",
-        )
-    )
-    session.add(
-        SceneCard(
-            scene_id="CH900_SC01",
-            chapter_id="CH900",
-            scene_seq=1,
-            onstage_chars_json=[],
-            scene_goal="Reunite the leads at the gate.",
-        )
-    )
-    session.add(SceneRunState(scene_id="CH900_SC01"))
-    session.add(
-        StyleObservation(
-            row_id="style_observation_STY_GATE_v1",
-            style_observation_id="STY_GATE",
-            scope="global",
-            scope_ref_id="global",
-            text="Gesture before explanation at reunion moments.",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at="2026-04-14T00:00:00+00:00",
-        )
-    )
-    session.add(
-        StyleObservation(
-            row_id="style_observation_STY_ALPHA_v1",
-            style_observation_id="STY_ALPHA",
-            scope="global",
-            scope_ref_id="global",
-            text="Let pauses land before exposition.",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at="2026-04-14T00:00:00+00:00",
-        )
-    )
-    session.add(
-        StyleRule(
-            row_id="style_rule_STYLE_GATE_v1",
-            style_rule_set_id="STYLE_GATE",
-            scope="global",
-            scope_ref_id="global",
-            content="Use clipped rhythm and tactile imagery when pressure rises.",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at="2026-04-14T00:00:00+00:00",
-        )
-    )
-    session.add(
-        BannedRuleCluster(
-            row_id="banned_rule_cluster_BAN_GATE_v1",
-            banned_cluster_id="BAN_GATE",
-            scope="global",
-            scope_ref_id="global",
-            content="Do not explain the whole backstory at the gate.",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at="2026-04-14T00:00:00+00:00",
-        )
-    )
-    session.add(
-        CalibrationLine(
-            row_id="calibration_line_CAL_GATE_v1",
-            calibration_line_id="CAL_GATE",
-            scope="global",
-            scope_ref_id="global",
-            text="The gate clicked shut like a verdict.",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at="2026-04-14T00:00:00+00:00",
-        )
-    )
-    session.commit()
-
-    payload = BundleBuilder(session).build("CH900_SC01")
-    snapshot = payload["snapshot"]
-
-    assert snapshot["source_version_refs"]["style_observation_ids"] == [
-        "STY_ALPHA",
-        "STY_GATE",
-    ]
-    assert snapshot["inline_digests"]["style_observation"] == (
-        "Let pauses land before exposition.\n\nGesture before explanation at reunion moments."
-    )
-    assert {item["digest_key"] for item in snapshot["ordered_injections"]} >= {
-        "chapter_goal",
-        "scene_card",
-        "style_observation",
-        "style_profile",
-    }
-    assert (
-        snapshot["source_version_refs"]["style_profile_contract"]
-        == "STYLE_FEATURE_CONTRACT_v1"
-    )
-    assert "STYLE_FEATURE_CONTRACT_v1" in snapshot["inline_digests"]["style_profile"]
-    assert "rhythm" in snapshot["inline_digests"]["style_profile"]
-    assert "imagery" in snapshot["inline_digests"]["style_profile"]
-    assert "calibration_lines" in snapshot["inline_digests"]["style_profile"]
-    assert (
-        "The gate clicked shut like a verdict."
-        in snapshot["inline_digests"]["style_profile"]
-    )
-
-
-def test_bundle_builder_prefers_scoped_calibration_over_unrelated_global_lines(
-    session,
-) -> None:
-    session.add(
-        ChapterGoal(
-            chapter_id="CH902",
-            planned_scene_count=1,
-            chapter_goal="Open a new project with isolated calibration.",
-        )
-    )
-    session.add(
-        SceneCard(
-            scene_id="CH902_SC01",
-            chapter_id="CH902",
-            scene_seq=1,
-            onstage_chars_json=[],
-            scene_goal="Follow the current chapter calibration only.",
-        )
-    )
-    session.add(SceneRunState(scene_id="CH902_SC01"))
-    session.add(
-        CalibrationLine(
-            row_id="calibration_line_CAL_GLOBAL_OLD_v1",
-            calibration_line_id="CAL_GLOBAL_OLD",
-            scope="global",
-            scope_ref_id="global",
-            text="The unrelated old gate calibration must not leak into this chapter.",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at="2026-04-14T00:00:00+00:00",
-        )
-    )
-    session.add(
-        CalibrationLine(
-            row_id="calibration_line_CAL_CH902_v1",
-            calibration_line_id="CAL_CH902",
-            scope="chapter",
-            scope_ref_id="CH902",
-            text="Use glass-rain evidence before explanation.",
-            active_flag=1,
-            runtime_eligible=1,
-            created_at="2026-05-07T00:00:00+00:00",
-        )
-    )
-    session.commit()
-
-    payload = BundleBuilder(session).build("CH902_SC01")
-    snapshot = payload["snapshot"]
-
-    assert snapshot["source_version_refs"]["calibration_line_ids"] == ["CAL_CH902"]
-    assert (
-        snapshot["inline_digests"]["calibration_line"]
-        == "Use glass-rain evidence before explanation."
-    )
-    assert "unrelated old gate" not in snapshot["inline_digests"]["style_profile"]
 
 
 def test_bundle_builder_scene_digest_includes_operational_scene_constraints(

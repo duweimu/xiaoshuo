@@ -262,14 +262,16 @@ def run_startup_recovery() -> dict[str, Any]:
 
     try:
         from novel_system.services.scene_run_jobs import recover_expired_cancel_requested_jobs
-        from novel_system.services.versioning.runtime_recovery import RuntimeRecoveryService
 
         with SessionLocal() as session:
-            summary["runtime_sweep"] = RuntimeRecoveryService(session).recover_stuck_jobs(
-                scene_cancellation_recoverer=recover_expired_cancel_requested_jobs,
-            )
+            summary["runtime_sweep"] = {
+                "expired_cancel_requests": recover_expired_cancel_requested_jobs(
+                    session, worker_id="startup_recovery"
+                )
+            }
+            session.commit()
     except Exception:  # pragma: no cover - startup boundary
-        logger.exception("startup recovery failed while sweeping expired runtime owners")
+        logger.exception("startup recovery failed while sweeping expired cancel requests")
         summary["runtime_sweep"] = {"error": "scan_failed"}
 
     llm_client, llm_enabled = _build_style_reference_llm_client()

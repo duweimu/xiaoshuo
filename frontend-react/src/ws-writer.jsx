@@ -11,7 +11,6 @@ import {
   wrDxPushLog, wrDxAddSkip, wrDxClearSkips, wrDxSnapshot,
   wrDxApplyPreferences, wrDxMergePreferences, wrDxLoadPreferences, wrDxSavePreferences, WrDeepDrawer,
 } from "./ws-deep.jsx";
-import { OrchestrationSignals } from "./ws-signals.jsx";
 import { UndoToast, useUndoToast } from "./ws-undo-toast.jsx";
 import { onRovingTabKeyDown } from "./a11y-tabs.js";
 import { apiGet, apiPatch, apiPost } from "./lib/client.js";
@@ -1200,7 +1199,6 @@ function WriterRoom({ t, setTweak, onExit, go }) {
               {am.card
                 ? <WrSceneCard card={am.card} onEdit={go ? () => go("author") : null} />
                 : <div className="wr-goal"><span className="wr-goal-k">本场目标</span><span className="wr-goal-v">{am.goal}</span></div>}
-              <OrchestrationSignals sceneId={activeScene} />
               {approvedLocked && <div className="wr-final-lock" role="status"><I.Lock size={13} /> 已批准终稿只读。需要改写时，请先到成稿中心重新打开本章。</div>}
               {posture === "deep" && <div className="wr-deep-note"><span className="dot" />深改姿态 · 正文只读 · 点击高亮句直达诊断</div>}
             </header>
