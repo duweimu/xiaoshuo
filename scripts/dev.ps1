@@ -1,7 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
     [ValidateSet("start", "stop", "restart")]
-    [string]$Action,
+    [string]$Action
 )
 
 $ErrorActionPreference = "Stop"

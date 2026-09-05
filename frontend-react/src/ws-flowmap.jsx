@@ -54,7 +54,10 @@ function fmDerive() {
     const STEPS = (S2_STEPS || []).map((s, i) => ({ ...s, state: live && live.steps && live.steps[i] ? live.steps[i].s : s.state }));
     if (!ARR || !STEPS.length) return FM_FALLBACK;
 
-    const total = Math.max(ARR.length, (work && work.chaptersTotal) || 0, 1);
+    // 目录是章节进度的唯一真相源。空目录必须保持 0 章，不能用目标章节数
+    // 或虚构的第 1 章填充流程地图。
+    const total = ARR.length;
+    const totalForRatio = Math.max(total, 1);
     const arrByN = {};
     ARR.forEach(c => { arrByN[pi(c.n)] = c; });
 
@@ -109,7 +112,7 @@ function fmDerive() {
 
     // —— 整书推进度（按阶段加权，区别于「定稿率」）
     const weighted = chapters.reduce((a, c) => a + (FM_STAGE_WEIGHT[c.stage] || 0), 0);
-    const overallPct = Math.round((weighted / total) * 100);
+    const overallPct = total ? Math.round((weighted / total) * 100) : 0;
 
     const pn = current ? pi(current.n) : 0;
     const firstPlanned = planned[0] ? pi(planned[0].n) : null;
@@ -162,7 +165,7 @@ function fmDerive() {
           ...base,
           big: String(drafted.length),
           unit: `/ ${total} 章`,
-          pct: Math.round((drafted.length / total) * 100),
+          pct: Math.round((drafted.length / totalForRatio) * 100),
           status: current ? { label: `第 ${pn} 章进行中`, tone: "crimson" } : { label: "进行中", tone: "crimson" },
           detail: {
             lead: current ? `当前的创作前线。第 ${pn} 章正在写，焦点落在${curScene ? `「${curScene.title}」` : "本章场景"}。` : "当前的创作前线。",
@@ -170,7 +173,7 @@ function fmDerive() {
               { t: "已动笔章节", s: "done", note: `${drafted.length} 章 · ${fmt(words)} 字` },
               { t: "完整初稿", s: "done", note: fullDraft.length ? `第 1–${pi(fullDraft[fullDraft.length - 1].n)} 章` : "—" },
               { t: "正在写", s: "active", note: current ? `第 ${pn} 章《${current.title}》${curScene ? ` · ${curScene.title}` : ""}` : "—" },
-              { t: "待动笔章节", s: "todo", note: `第 ${drafted.length + 1}–${total} 章` },
+              { t: "待动笔章节", s: "todo", note: total ? `第 ${drafted.length + 1}–${total} 章` : "暂无章节" },
             ],
             cta: { label: "回到写作房间", to: "writer" },
           },
@@ -181,7 +184,7 @@ function fmDerive() {
         ...base,
         big: String(approved.length),
         unit: `/ ${total} 章`,
-        pct: Math.round((approved.length / total) * 100),
+        pct: Math.round((approved.length / totalForRatio) * 100),
         status: review.length ? { label: `${review.length} 章审阅中`, tone: "rose" } : { label: "累积中", tone: "slate" },
         detail: {
           lead: "通过质检与批准的章节汇入成稿中心，等待整书发布。",
@@ -189,7 +192,7 @@ function fmDerive() {
             { t: "已批准终稿", s: "done", note: approved.length ? `第 1–${pi(approved[approved.length - 1].n)} 章` : "—" },
             { t: "审阅中", s: review.length ? "warn" : "todo", note: review.length ? review.map(c => `第 ${pi(c.n)} 章`).join("、") : "—" },
             { t: "草稿待审", s: "todo", note: draftCh.length ? draftCh.map(c => `第 ${pi(c.n)} 章`).join("、") : "—" },
-            { t: "距整书目标", s: "todo", note: `${total} 章 · 已定稿 ${Math.round((approved.length / total) * 100)}%` },
+            { t: "距整书目标", s: "todo", note: total ? `${total} 章 · 已定稿 ${Math.round((approved.length / total) * 100)}%` : "暂无章节" },
           ],
           cta: { label: "打开成稿中心", to: "manuscripts" },
         },

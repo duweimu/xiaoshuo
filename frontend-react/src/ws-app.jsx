@@ -135,7 +135,7 @@ const WS_VIEW_LABELS = (() => {
 const WS_ALL_VIEWS = Object.keys(WS_VIEW_LABELS);
 const WS_PROJECT_SCOPED_VIEWS = new Set([
   "flowmap", "snowflake", "writer", "library", "author", "scene",
-  "manuscripts", "quality", "eval", "index", "interop",
+  "manuscripts", "quality",
 ]);
 /* 旧路由别名：独立深改台已并入写作台，深链重定向到深改姿态 */
 const WS_VIEW_ALIAS = { deepdesk: "writer" };

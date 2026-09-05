@@ -391,8 +391,8 @@ const S2_STEP_DATA = {
 
 /* ---- AI candidate generation (后端节点 snowflake_step_candidates，G5) ----
    Gather the confirmed upstream layers as context and let the backend
-   template produce 3 divergent candidates. The default static set keeps
-   the step usable when the LLM is unavailable. */
+   template produce 3 divergent candidates. Scaffold data remains editable
+   when the LLM is unavailable; generation itself fails closed. */
 const S2_ID_LETTERS = ["A", "B", "C", "D"];
 
 // fold one step's content (draft, else scaffold) to a short context line
@@ -653,7 +653,7 @@ function WsSnowflake({ go, initialStep, onOverview }) {
   if (keyRef.current == null) keyRef.current = s2Key();
   const myKey = keyRef.current;
   const saved = s2Load(myKey);
-  const [activeKey, setActiveKey] = useSS(initialStep || "paragraph");
+  const [activeKey, setActiveKey] = useSS(initialStep || "audience");
   /* 页签按步骤记忆：在某步点开「候选」，不该让其它步骤也停在候选页 */
   const [tabByStep, setTabByStep] = useSS({});
   const [drafts, setDrafts] = useSS(() => ({ ...s2DefaultDrafts(), ...(saved.drafts || {}) }));

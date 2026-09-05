@@ -3,6 +3,7 @@ import { I } from "./icons.jsx";
 import { WsWorks, useActiveWork, useWorksStatus, wsKey } from "./ws-works.jsx";
 import { WsCatalog, useCatalogChapters } from "./ws-catalog.jsx";
 import { RV_KINDS, rvOpenItems, rvMarkResolved } from "./ws-review.jsx";
+import { WsAiProviders, useAiProviders } from "./ws-ai-providers.jsx";
 
 /* global React, I, useActiveWork, useCatalogChapters */
 /* ==========================================================
@@ -127,6 +128,7 @@ function WsHomeFull({ work: p, go, chapters, remote }) {
   return (
     <div className="ws-page ws-view hm" data-screen-label="主页">
       <WsHomeDataNotice remote={remote} workId={p.id} />
+      <WsAiSetupNotice go={go} />
       {/* ===== masthead — identity + book progress ===== */}
       <header className="hm-top">
         <div className="hm-id">
@@ -287,10 +289,36 @@ function WsHomeNoWorks({ remote }) {
   );
 }
 
+/* 模型未就绪时在主页提前说明，避免作者走到 AI 动作后才遇到 409/502。 */
+function WsAiSetupNotice({ go }) {
+  const ai = useAiProviders();
+  React.useEffect(() => {
+    if (!ai.loaded && !ai.loading && !ai.error) {
+      void WsAiProviders.refresh().catch(() => {});
+    }
+  }, [ai.loaded, ai.loading, ai.error]);
+  const readiness = ai.overview && ai.overview.readiness;
+  const globallyDisabled = ai.overview && ai.overview.api_snapshot && ai.overview.api_snapshot.enabled === false;
+  if (!ai.loaded || !readiness || (readiness.ready === true && !globallyDisabled)) return null;
+  return (
+    <div className="hm-data-notice" role="status" aria-live="polite">
+      <span className="hm-data-notice-ic"><I.Sparkles size={15} /></span>
+      <div>
+        <strong>AI 尚未就绪</strong>
+        <span>开始生成前，请先在系统设置中配置并启用一个可用模型。</span>
+      </div>
+      <button type="button" className="btn btn-ghost btn-sm" onClick={() => go && go("settings")}>
+        <I.Settings size={13} /> 去配置
+      </button>
+    </div>
+  );
+}
+
 function WsHomeBlank({ work: p, go, remote }) {
   return (
     <div className="ws-page ws-view hm" data-screen-label="主页 · 新作品">
       <WsHomeDataNotice remote={remote} workId={p.id} />
+      <WsAiSetupNotice go={go} />
       <header className="hm-top">
         <div className="hm-id">
           <div className="hm-greet"><span className="hm-greet-dot" /> {p.greet || "新的开始"}</div>

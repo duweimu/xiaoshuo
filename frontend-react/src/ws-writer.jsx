@@ -479,7 +479,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     const inField = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA");
     const onKey = (e) => {
       const meta = e.metaKey || e.ctrlKey;
-      if (meta && e.key.toLowerCase() === "j") { e.preventDefault(); openAI(); }
+      if (meta && e.key.toLowerCase() === "j") { e.preventDefault(); if (activeScene) openAI(); }
       else if (meta && e.key === ".") { e.preventDefault(); setImmersion(v => !v); }
       else if (meta && e.key === "1") { e.preventDefault(); setLeftOpen(v => !v); if (!coexist) setRightOpen(false); }
       else if (meta && e.key === "2") { e.preventDefault(); setRightOpen(v => !v); if (!coexist) setLeftOpen(false); }
@@ -491,7 +491,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [trayOpen, leftOpen, rightOpen, immersion, coexist]);
+  }, [trayOpen, leftOpen, rightOpen, immersion, coexist, activeScene]);
 
   // session clock — ticks for the life of the writing session
   useWE(() => { const id = setInterval(() => setElapsed(e => e + 1), 1000); return () => clearInterval(id); }, []);
@@ -717,7 +717,7 @@ function WriterRoom({ t, setTweak, onExit, go }) {
   };
 
   const openAI = () => {
-    if (approvedLocked) return;
+    if (!activeScene || approvedLocked) return;
     if (tw.aiPlace === "drawer") { setRightTab("ai"); setRightOpen(true); if (!coexist) setLeftOpen(false); }
     else setTrayOpen(true);
   };
@@ -1228,9 +1228,11 @@ function WriterRoom({ t, setTweak, onExit, go }) {
           {onExit && (<><button className="wr-dock-btn wr-dock-icon" onClick={onExit} title="返回工作台"><I.Home size={16} /></button><div className="wr-dock-sep" /></>)}
           <button className={`wr-dock-btn ${leftOpen ? "is-on" : ""}`} onClick={() => { setLeftOpen(v => !v); if (!coexist) setRightOpen(false); }} title="大纲 ⌘1"><I.BookOpen size={16} /> 大纲</button>
           <button className={`wr-dock-btn ${rightOpen ? "is-on" : ""}`} onClick={() => { setRightOpen(v => !v); if (!coexist) setLeftOpen(false); }} title="上下文 ⌘2"><I.Compass size={16} /> 上下文</button>
-          <div className="wr-dock-sep" />
-          <button className="wr-dock-btn accent" disabled={approvedLocked} onClick={openAI} title={approvedLocked ? "终稿已锁定，请先重新打开章节" : "AI 续写 / 改写 ⌘J"}><I.Sparkles size={16} /> AI 续写 <kbd>⌘J</kbd></button>
-          <div className="wr-dock-sep" />
+          {activeScene && <div className="wr-dock-sep" />}
+          {activeScene && (
+            <button className="wr-dock-btn accent" disabled={approvedLocked} onClick={openAI} title={approvedLocked ? "终稿已锁定，请先重新打开章节" : "AI 续写 / 改写 ⌘J"}><I.Sparkles size={16} /> AI 续写 <kbd>⌘J</kbd></button>
+          )}
+          {activeScene && <div className="wr-dock-sep" />}
           <button className={`wr-dock-btn wr-dock-icon ${isDesk ? "wr-layout-on" : ""}`} onClick={() => setTweak && setTweak("wrLayout", isDesk ? "immersive" : "desk")} title={isDesk ? "切换到沉浸稿纸" : "切换到书桌三栏"}><I.PanelLeft size={16} /></button>
           <button className={`wr-dock-btn wr-dock-icon ${immersion ? "is-on" : ""}`} onClick={() => setImmersion(v => !v)} title="沉浸写作 ⌘."><I.Eye size={16} /></button>
         </div>

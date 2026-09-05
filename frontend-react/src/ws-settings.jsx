@@ -226,7 +226,7 @@ function DataSettings({ go }) {
           <button className="btn btn-ghost" onClick={() => go && go("manuscripts")}>去成稿中心 <I.ArrowRight size={13} /></button>
         </Row>
         <Row label="浏览器缓存快照" hint="仅供诊断或人工取证；不含服务端数据库，不能迁移或恢复项目。">
-          <button className="btn btn-ghost" onClick={() => go && go("interop")}>查看互操作 <I.ArrowRight size={13} /></button>
+          <span className="text-muted text-xs">可在同步与恢复中心查看</span>
         </Row>
         <Row label="完整数据库备份" hint="由运维执行带完整性、外键和 SHA-256 校验的停机恢复演练。">
           <span className="text-muted text-xs">不在浏览器内执行</span>

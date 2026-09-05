@@ -74,9 +74,6 @@ function WsPalette({ open, onClose, run, theme }) {
     cmds.push({ g: "导航 · 生产", icon: "Play", label: "AI 起草台", hint: "高级", kw: "scene ai qicao changjing gongzuotai", run: () => run({ type: "go", view: "scene" }) });
     cmds.push({ g: "导航 · 生产", icon: "BookOpen", label: "成稿中心", hint: "高级", kw: "manuscripts chenggao", run: () => run({ type: "go", view: "manuscripts" }) });
     cmds.push({ g: "导航 · 生产", icon: "Microscope", label: "写作台 · 深改姿态", hint: "原深改台", kw: "deepdesk shengai shenxiu", run: () => run({ type: "writer-action", action: "deep" }) });
-    // 长篇控制塔已并入「章节编排」的「全书编排」（故事弧线 / 线索织布机 / 节奏镜头 / 全书体检）。
-    cmds.push({ g: "导航 · 运维", icon: "UploadCloud", label: "发布索引", hint: "高级", kw: "index fabu suoyin", run: () => run({ type: "go", view: "index" }) });
-    cmds.push({ g: "导航 · 运维", icon: "FileInput", label: "互操作与导出", hint: "高级", kw: "interop hucaozuo daoru daochu", run: () => run({ type: "go", view: "interop" }) });
     cmds.push({ g: "导航 · 系统", icon: "Settings", label: "系统设置", hint: "设置", kw: "settings shezhi", run: () => run({ type: "go", view: "settings" }) });
     cmds.push({ g: "导航 · 系统", icon: "Trash", label: "回收站", hint: "系统", kw: "trash huishouzhan", run: () => run({ type: "go", view: "trash" }) });
 

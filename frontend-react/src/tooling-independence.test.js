@@ -10,10 +10,11 @@ const srcDir = path.join(frontendRoot, "src");
 
 function sourceModules() {
   const modules = [];
+  const ignoredDirectories = new Set([".pytest_cache", "node_modules", ".test-results"]);
   const walk = (directory) => {
     for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
-      if (entry.isDirectory()) walk(absolute);
+      if (entry.isDirectory() && !ignoredDirectories.has(entry.name)) walk(absolute);
       else if (/\.(js|jsx)$/.test(entry.name) && !entry.name.includes(".test.")) modules.push(absolute);
     }
   };

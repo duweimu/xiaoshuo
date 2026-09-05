@@ -4,7 +4,7 @@ Vite + React 18 前端，默认端口 `5174`。仓库根目录的 `start-dev.cmd
 
 ## 当前产品入口
 
-默认路由是 `#home`。作家模式显示主页、流程、构思、写作、风格、待办、资料、设置和回收站；高级模式另外显示章节编排、AI 起草台、成稿中心、长篇控制塔、文学质量、盲评、成本、索引与互操作导出。
+默认路由是 `#home`。作家模式显示主页、流程、构思、写作、风格、待办、资料、设置和回收站；高级模式另外显示章节编排、AI 起草台、成稿中心、文学质量和成本看板。
 
 界面能力边界：
 
@@ -27,7 +27,7 @@ npm run build      # dist/
 需要旧 Vue 界面时，在仓库根目录显式运行：
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -IncludeLegacyVue
+powershell -ExecutionPolicy Bypass -File .\scripts\dev.ps1 -Action start
 ```
 
 ## API 配置
